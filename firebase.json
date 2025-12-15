@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "zuckerwatte-datenbank",
     "public": "dist",
     "ignore": [
       "firebase.json",
