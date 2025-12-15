@@ -6,9 +6,13 @@ import {
   Link,
   useLocation,
 } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { auth } from "./firebase";
 import AppStandorte from "./AppStandorte";
 import AppAutomaten from "./AppAutomaten";
 import AppKontakte from "./AppKontakte";
+import Login from "./Login";
 
 const colors = {
   bg: "#f5f7fb",
@@ -24,12 +28,44 @@ const HEADER_HEIGHT = 88;
 
 function AppShell() {
   const location = useLocation();
+  const [user, setUser] = useState(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser || null);
+      setLoadingAuth(false);
+    });
+
+    return () => unsub();
+  }, []);
 
   const tabs = [
     { to: "/standorte", label: "Standorte" },
     { to: "/automaten", label: "Automaten" },
     { to: "/kontakte", label: "Kontakte" },
   ];
+
+  if (loadingAuth) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily:
+            '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        Anmeldung wird geprüft…
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login />;
+  }
 
   return (
     <div
@@ -48,10 +84,10 @@ function AppShell() {
           top: 0,
           left: 0,
           right: 0,
-          height: HEADER_HEIGHT,              // höherer Kopf
+          height: HEADER_HEIGHT,
           padding: "0 16px",
           display: "flex",
-          alignItems: "center",               // vertikal mittig
+          alignItems: "center",
           justifyContent: "space-between",
           background: colors.card,
           borderBottom: `1px solid ${colors.border}`,
@@ -100,7 +136,7 @@ function AppShell() {
         <nav
           style={{
             display: "flex",
-            alignItems: "center",             // Navigation in der Mitte
+            alignItems: "center",
             gap: 6,
             background: "#eef2ff",
             padding: 4,
@@ -129,12 +165,42 @@ function AppShell() {
             );
           })}
         </nav>
+
+        {/* Rechts kleiner User + Logout */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              fontSize: 12,
+              color: colors.textMuted,
+              maxWidth: 150,
+              textOverflow: "ellipsis",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+            }}
+            title={user?.email || ""}
+          >
+            {user?.email}
+          </span>
+          <button
+            onClick={() => signOut(auth)}
+            style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 999,
+              border: `1px solid ${colors.border}`,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
-      {/* Inhaltsbereich unter dem festen Header, hier wird gescrollt */}
+      {/* Inhaltsbereich unter dem festen Header */}
       <main
         style={{
-          paddingTop: HEADER_HEIGHT + 12,      // Platz für Header
+          paddingTop: HEADER_HEIGHT + 12,
           minHeight: `calc(100vh - ${HEADER_HEIGHT + 12}px)`,
           boxSizing: "border-box",
           paddingInline: 12,
