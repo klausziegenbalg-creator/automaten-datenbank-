@@ -6,6 +6,7 @@ import {
   doc,
   updateDoc,
   addDoc,
+  deleteDoc, // neu
 } from "firebase/firestore";
 import { db, storage } from "./firebase";
 import { useNavigate } from "react-router-dom";
@@ -107,43 +108,55 @@ function AppStandorte() {
       setSaving(true);
       setSaveError(null);
 
-      const refDoc = doc(db, "Standorte", selected.id);
-      const { id, ...rest } = formData;
-
-      const aktuelleDokumente = Array.isArray(formData.dokumente)
-        ? formData.dokumente
+      const basis = { ...formData };
+      const aktuelleDokumente = Array.isArray(basis.dokumente)
+        ? basis.dokumente
         : [];
 
       let neueDokumenteListe = [...aktuelleDokumente];
 
       if (neuesDokumentFile && neuesDokumentName.trim()) {
+        const zielId = selected.id;
         const url = await uploadFileAndGetURL(
           neuesDokumentFile,
-          `standorte/${selected.id}/dokumente/${Date.now()}_${
-            neuesDokumentFile.name
-          }`
+          `standorte/${zielId}/dokumente/${Date.now()}_${neuesDokumentFile.name}`
         );
         if (url) {
           neueDokumenteListe = [
             ...aktuelleDokumente,
-            {
-              name: neuesDokumentName.trim(),
-              url,
-            },
+            { name: neuesDokumentName.trim(), url },
           ];
         }
       }
 
-      rest.dokumente = neueDokumenteListe;
+      basis.dokumente = neueDokumenteListe;
 
-      await updateDoc(refDoc, rest);
+      // Neuer Standort (Platzhalter-ID beginnt mit "new_") -> addDoc
+      if (selected.id && selected.id.startsWith("new_")) {
+        const { id: _ignore, ...payload } = basis;
+        const refDoc = await addDoc(collection(db, "Standorte"), payload);
+        const neu = { id: refDoc.id, ...payload };
 
-      const updated = standorte.map((s) =>
-        s.id === selected.id ? { ...s, ...rest } : s
-      );
-      setStandorte(updated);
-      setSelected((prev) => (prev ? { ...prev, ...rest } : prev));
-      setFormData((prev) => ({ ...prev, ...rest }));
+        setStandorte((prev) =>
+          prev.map((s) => (s.id === selected.id ? neu : s))
+        );
+        setSelected(neu);
+        setFormData(neu);
+      } else {
+        // bestehender Standort -> updateDoc
+        const refDoc = doc(db, "Standorte", selected.id);
+        const { id: _ignore, ...payload } = basis;
+        await updateDoc(refDoc, payload);
+
+        setStandorte((prev) =>
+          prev.map((s) =>
+            s.id === selected.id ? { ...s, ...payload } : s
+          )
+        );
+        setSelected((prev) => (prev ? { ...prev, ...payload } : prev));
+        setFormData((prev) => ({ ...prev, ...payload }));
+      }
+
       setEditMode(false);
       setNeuesDokumentFile(null);
       setNeuesDokumentName("");
@@ -177,8 +190,10 @@ function AppStandorte() {
         : [];
       const neueListe = aktuelle.filter((_, i) => i !== index);
 
-      const refDoc = doc(db, "Standorte", selected.id);
-      await updateDoc(refDoc, { dokumente: neueListe });
+      if (!selected.id.startsWith("new_")) {
+        const refDoc = doc(db, "Standorte", selected.id);
+        await updateDoc(refDoc, { dokumente: neueListe });
+      }
 
       setSelected((prev) => (prev ? { ...prev, dokumente: neueListe } : prev));
       setFormData((prev) => ({ ...prev, dokumente: neueListe }));
@@ -195,37 +210,66 @@ function AppStandorte() {
     }
   }
 
-  async function handleNewStandort() {
+  // Neuer Standort nur lokal mit Platzhalter-ID anlegen
+  function handleNewStandort() {
+    const basis = {
+      id: `new_${Date.now()}`,
+      centername: "",
+      standort: "",
+      adresse: "",
+      miethohe: "",
+      nebenkosten: "",
+      gesamtmiete: "",
+      umsatzmiete: "",
+      prozenteUmsatzmiete: "",
+      vetragsbeginn: "",
+      vertragsende: "",
+      bemerkungen: "",
+      dokumente: [],
+    };
+
+    setStandorte((prev) => [basis, ...prev]);
+    setSelected(basis);
+    setFormData(basis);
+    setEditMode(true);
+    setSaveError(null);
+    setNeuesDokumentFile(null);
+    setNeuesDokumentName("");
+  }
+
+  // Standort löschen (neue nur lokal, bestehende auch in Firestore)
+  async function handleDeleteStandort() {
+    if (!selected) return;
+
+    // nur lokal angelegter, noch nicht gespeicherter Standort
+    if (selected.id.startsWith("new_")) {
+      setStandorte((prev) => prev.filter((s) => s.id !== selected.id));
+      setSelected(null);
+      setFormData({});
+      setEditMode(false);
+      setSaveError(null);
+      return;
+    }
+
+    const ok = window.confirm(
+      `Möchtest du den Standort "${selected.centername || ""} ${
+        selected.standort || ""
+      }" wirklich löschen?`
+    );
+    if (!ok) return;
+
     try {
       setSaving(true);
       setSaveError(null);
 
-      const basis = {
-        centername: "",
-        standort: "",
-        adresse: "",
-        miethohe: "",
-        nebenkosten: "",
-        gesamtmiete: "",
-        umsatzmiete: "",
-        prozenteUmsatzmiete: "",
-        vetragsbeginn: "",
-        vertragsende: "",
-        bemerkungen: "",
-        dokumente: [],
-      };
+      await deleteDoc(doc(db, "Standorte", selected.id));
 
-      const refDoc = await addDoc(collection(db, "Standorte"), basis);
-      const neu = { id: refDoc.id, ...basis };
-
-      setStandorte((prev) => [neu, ...prev]);
-      setSelected(neu);
-      setFormData(neu);
-      setEditMode(true);
-      setNeuesDokumentFile(null);
-      setNeuesDokumentName("");
+      setStandorte((prev) => prev.filter((s) => s.id !== selected.id));
+      setSelected(null);
+      setFormData({});
+      setEditMode(false);
     } catch (err) {
-      console.error("Neuen Standort anlegen fehlgeschlagen:", err);
+      console.error("Standort löschen fehlgeschlagen:", err);
       setSaveError(err.message);
     } finally {
       setSaving(false);
@@ -567,6 +611,26 @@ function AppStandorte() {
                 >
                   Neuer Standort
                 </button>
+
+                {selected && (
+                  <button
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 999,
+                      border: "none",
+                      background: colors.danger,
+                      color: "#fff",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      cursor: "pointer",
+                    }}
+                    onClick={handleDeleteStandort}
+                    disabled={saving}
+                  >
+                    Standort löschen
+                  </button>
+                )}
+
                 <button
                   style={{
                     padding: "6px 14px",
