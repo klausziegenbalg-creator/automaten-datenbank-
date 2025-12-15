@@ -1,9 +1,9 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-// Analytics kannst du später ergänzen, ist fürs Erste nicht nötig
-// import { getAnalytics } from "firebase/analytics";
+import { getAuth } from "firebase/auth"; // NEU: Firebase Authentication
 
+// Konfiguration deines Projekts "Digitales Bordbuch"
 const firebaseConfig = {
   apiKey: "AIzaSyBo-pt3krDP9c5AxojmWaHVqPkoqmupOvA",
   authDomain: "digitales-bordbuch.firebaseapp.com",
@@ -14,8 +14,10 @@ const firebaseConfig = {
   measurementId: "G-VRX8Q8QNDH",
 };
 
+// App initialisieren
 const app = initializeApp(firebaseConfig);
 
-// Firestore & Storage holen und exportieren
+// Firestore, Storage und Auth holen und exportieren
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+export const auth = getAuth(app);      // NEU: wird in der Verwaltungsapp für Login/Route-Schutz genutzt
