@@ -440,7 +440,6 @@ function AppDashboardReinigung() {
     <div
       style={{
         maxWidth: "100%",
-        maxwidth: "100%",
         margin: "0 auto",
         padding: 12,
       }}
