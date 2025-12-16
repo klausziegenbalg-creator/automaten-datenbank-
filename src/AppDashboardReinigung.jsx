@@ -439,9 +439,15 @@ function AppDashboardReinigung() {
   return (
     <div
       style={{
-        maxWidth: "100%",
-        margin: "0 auto",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily:
+          '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        background: colors.bg,
+        color: colors.textMain,
         padding: 12,
+        boxSizing: "border-box",
       }}
     >
       <h1
@@ -776,6 +782,8 @@ function AppDashboardReinigung() {
               display: "grid",
               gridTemplateColumns: "minmax(0,2.2fr) minmax(0,1.4fr)",
               gap: 16,
+              flex: 1,
+              minHeight: 0,
             }}
           >
             {/* Linke Spalte: Reinigungsprotokolle */}
@@ -1257,3 +1265,4 @@ function AppDashboardReinigung() {
 }
 
 export default AppDashboardReinigung;
+
