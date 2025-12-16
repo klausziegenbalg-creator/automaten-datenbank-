@@ -13,6 +13,7 @@ import AppStandorte from "./AppStandorte";
 import AppAutomaten from "./AppAutomaten";
 import AppKontakte from "./AppKontakte";
 import Login from "./Login";
+import AppDashboardReinigung from "./AppDashboardReinigung";
 
 const colors = {
   bg: "#f5f7fb",
@@ -44,6 +45,7 @@ function AppShell() {
     { to: "/standorte", label: "Standorte" },
     { to: "/automaten", label: "Automaten" },
     { to: "/kontakte", label: "Kontakte" },
+    { to: "/dashboard-reinigung", label: "Dashboard Reinigung" }, // NEU
   ];
 
   if (loadingAuth) {
@@ -128,7 +130,7 @@ function AppShell() {
                 color: colors.textMuted,
               }}
             >
-              Standorte · Automaten · Kontakte
+              Standorte · Automaten · Kontakte · Dashboard
             </div>
           </div>
         </div>
@@ -211,6 +213,10 @@ function AppShell() {
           <Route path="/automaten" element={<AppAutomaten />} />
           <Route path="/automaten/:automatId" element={<AppAutomaten />} />
           <Route path="/kontakte" element={<AppKontakte />} />
+          <Route
+            path="/dashboard-reinigung"
+            element={<AppDashboardReinigung />}
+          />
           <Route path="*" element={<AppStandorte />} />
         </Routes>
       </main>
