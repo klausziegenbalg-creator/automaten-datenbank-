@@ -61,6 +61,12 @@ function getWeekKeyFromDate(date) {
   return `${year}-W${week.toString().padStart(2, "0")}`;
 }
 
+// Code-Normalisierung: "CT-0307227" -> "CT0307227"
+function normalizeCode(raw) {
+  if (!raw) return "";
+  return raw.replace("CT-", "CT").trim();
+}
+
 function AppDashboardReinigung() {
   const navigate = useNavigate();
 
@@ -112,10 +118,11 @@ function AppDashboardReinigung() {
       }));
       setAutomaten(alleAutomaten);
 
-      // Mapping maschinenCode/automatCode -> Dokument-ID
+      // Mapping maschinenCode/automatCode -> Dokument-ID (normalisiert)
       const map = {};
       alleAutomaten.forEach((a) => {
-        const code = a.maschinenCode || a.automatCode || a.Automat;
+        const raw = a.maschinenCode || a.automatCode || a.Automat;
+        const code = normalizeCode(raw);
         if (code) {
           map[code] = a.id;
         }
@@ -130,9 +137,8 @@ function AppDashboardReinigung() {
       });
       setWartungselementeMap(wartMap);
 
-      // Reinigungsprotokolle (Datum + Filter)
+      // Reinigungsprotokolle
       const { start, end } = getStartEndOfDay(datum);
-
       const reinigSnap = await getDocs(
         query(
           collection(db, "reinigungen"),
@@ -144,7 +150,6 @@ function AppDashboardReinigung() {
         id: d.id,
         ...d.data(),
       }));
-
       if (stadtFilter !== "Alle Städte") {
         reinigData = reinigData.filter((p) => p.stadt === stadtFilter);
       }
@@ -156,7 +161,7 @@ function AppDashboardReinigung() {
       // Wochenwartung
       await ladeWochenWartung(new Date(datum));
 
-      // Wartungsprotokolle (Checkheft) – Datum als String "DD.MM.YYYY"
+      // Wartungsprotokolle (Checkheft) – Datum "DD.MM.YYYY"
       const wartungsProtSnap = await getDocs(
         collection(db, "Wartungsprotokolle")
       );
@@ -325,7 +330,7 @@ function AppDashboardReinigung() {
   const abdeckungProzent = useMemo(() => {
     if (!totalAutomatenImFilter) return 0;
     const uniqueAutomatenMitProtokoll = new Set(
-      protokolle.map((p) => p.automatCode)
+      protokolle.map((p) => normalizeCode(p.automatCode))
     );
     return Math.round(
       (uniqueAutomatenMitProtokoll.size / totalAutomatenImFilter) * 100
@@ -333,7 +338,9 @@ function AppDashboardReinigung() {
   }, [protokolle, totalAutomatenImFilter]);
 
   const fehlendeAutomaten = useMemo(() => {
-    const erledigte = new Set(protokolle.map((p) => p.automatCode));
+    const erledigte = new Set(
+      protokolle.map((p) => normalizeCode(p.automatCode))
+    );
     let liste = automaten;
     if (stadtFilter !== "Alle Städte") {
       liste = liste.filter((a) => a.stadt === stadtFilter);
@@ -342,7 +349,9 @@ function AppDashboardReinigung() {
       liste = liste.filter((a) => a.center === centerFilter);
     }
     return liste.filter((a) => {
-      const code = a.maschinenCode || a.automatCode || a.Automat;
+      const code = normalizeCode(
+        a.maschinenCode || a.automatCode || a.Automat
+      );
       return code && !erledigte.has(code);
     });
   }, [automaten, protokolle, stadtFilter, centerFilter]);
@@ -353,7 +362,9 @@ function AppDashboardReinigung() {
     let total = 0;
 
     automaten.forEach((a) => {
-      const code = a.maschinenCode || a.automatCode || a.Automat;
+      const code = normalizeCode(
+        a.maschinenCode || a.automatCode || a.Automat
+      );
       if (!code) return;
       total++;
       const info = wochenMap[code];
@@ -378,8 +389,9 @@ function AppDashboardReinigung() {
       const offen = ermittleOffeneAufgaben(p);
 
       let wwText = "–";
-      if (wochenMap && p.automatCode && wochenMap[p.automatCode]) {
-        const info = wochenMap[p.automatCode];
+      const normCode = normalizeCode(p.automatCode);
+      if (wochenMap && normCode && wochenMap[normCode]) {
+        const info = wochenMap[normCode];
         if (info.status === "erledigt") {
           const dt = info.doneDate
             ? info.doneDate.toLocaleDateString("de-DE")
@@ -611,7 +623,9 @@ function AppDashboardReinigung() {
                 style={{ fontSize: 32, fontWeight: 700, color: colors.primary }}
               >
                 {
-                  new Set(protokolle.map((p) => p.automatCode || "")).size
+                  new Set(
+                    protokolle.map((p) => normalizeCode(p.automatCode) || "")
+                  ).size
                 }
               </div>
               <div style={{ fontSize: 12, color: colors.textMuted }}>
@@ -875,9 +889,11 @@ function AppDashboardReinigung() {
                   </thead>
                   <tbody>
                     {protokolleGefiltert.map((p) => {
+                      const normCode = normalizeCode(p.automatCode);
+
                       let wwText = "–";
-                      if (wochenMap && p.automatCode && wochenMap[p.automatCode]) {
-                        const info = wochenMap[p.automatCode];
+                      if (wochenMap && normCode && wochenMap[normCode]) {
+                        const info = wochenMap[normCode];
                         if (info.status === "erledigt") {
                           const dt = info.doneDate
                             ? info.doneDate.toLocaleDateString("de-DE")
@@ -920,7 +936,7 @@ function AppDashboardReinigung() {
                             <button
                               type="button"
                               onClick={() => {
-                                const id = codeToIdMap[p.automatCode];
+                                const id = codeToIdMap[normCode];
                                 if (id) {
                                   navigate(`/automaten/${id}`);
                                 } else {
@@ -1078,7 +1094,9 @@ function AppDashboardReinigung() {
                   </thead>
                   <tbody>
                     {automaten.map((a) => {
-                      const code = a.maschinenCode || a.automatCode || a.Automat;
+                      const code = normalizeCode(
+                        a.maschinenCode || a.automatCode || a.Automat
+                      );
                       if (!code) return null;
                       const info = wochenMap[code];
 
@@ -1110,7 +1128,9 @@ function AppDashboardReinigung() {
 
                       return (
                         <tr key={a.id} style={{ background: bg }}>
-                          <td style={{ padding: "6px 8px" }}>{code}</td>
+                          <td style={{ padding: "6px 8px" }}>
+                            {a.maschinenCode || a.automatCode || a.Automat}
+                          </td>
                           <td style={{ padding: "6px 8px" }}>
                             {a.stadt} / {a.center}
                           </td>
@@ -1172,42 +1192,47 @@ function AppDashboardReinigung() {
                     </tr>
                   </thead>
                   <tbody>
-                    {wartungsprotokolle.map((w) => (
-                      <tr key={w.id}>
-                        <td style={{ padding: "6px 8px" }}>{w.automatCode}</td>
-                        <td style={{ padding: "6px 8px" }}>{w.standort}</td>
-                        <td style={{ padding: "6px 8px" }}>{w.bezeichnung}</td>
-                        <td style={{ padding: "6px 8px" }}>{w.name}</td>
-                        <td style={{ padding: "6px 8px" }}>
-                          {w.nachsteFaelligkeit || "–"}
-                        </td>
-                        <td style={{ padding: "6px 8px" }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const id = codeToIdMap[w.automatCode];
-                              if (id) {
-                                navigate(`/automaten/${id}`);
-                              } else {
-                                alert(
-                                  `Kein Automat mit Code ${w.automatCode} im Automatenbestand gefunden.`
-                                );
-                              }
-                            }}
-                            style={{
-                              padding: "4px 8px",
-                              borderRadius: 999,
-                              border: `1px solid ${colors.border}`,
-                              background: "#fff",
-                              fontSize: 11,
-                              cursor: "pointer",
-                            }}
-                          >
-                            Automat öffnen
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {wartungsprotokolle.map((w) => {
+                      const normCode = normalizeCode(w.automatCode);
+                      return (
+                        <tr key={w.id}>
+                          <td style={{ padding: "6px 8px" }}>
+                            {w.automatCode}
+                          </td>
+                          <td style={{ padding: "6px 8px" }}>{w.standort}</td>
+                          <td style={{ padding: "6px 8px" }}>{w.bezeichnung}</td>
+                          <td style={{ padding: "6px 8px" }}>{w.name}</td>
+                          <td style={{ padding: "6px 8px" }}>
+                            {w.nachsteFaelligkeit || "–"}
+                          </td>
+                          <td style={{ padding: "6px 8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const id = codeToIdMap[normCode];
+                                if (id) {
+                                  navigate(`/automaten/${id}`);
+                                } else {
+                                  alert(
+                                    `Kein Automat mit Code ${w.automatCode} im Automatenbestand gefunden.`
+                                  );
+                                }
+                              }}
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: 999,
+                                border: `1px solid ${colors.border}`,
+                                background: "#fff",
+                                fontSize: 11,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Automat öffnen
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {wartungsprotokolle.length === 0 && (
                       <tr>
                         <td
