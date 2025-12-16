@@ -74,6 +74,7 @@ function AppDashboardReinigung() {
   const [search, setSearch] = useState("");
 
   const [automaten, setAutomaten] = useState([]);
+  const [codeToIdMap, setCodeToIdMap] = useState({});
   const [protokolle, setProtokolle] = useState([]);
   const [wartungselementeMap, setWartungselementeMap] = useState({});
   const [wochenMap, setWochenMap] = useState({});
@@ -86,7 +87,6 @@ function AppDashboardReinigung() {
     richtung: 1,
   });
 
-  // Hilfsfunktionen zum Datum
   function getStartEndOfDay(dateStr) {
     const d = new Date(dateStr);
     const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
@@ -101,17 +101,26 @@ function AppDashboardReinigung() {
     return { start, end };
   }
 
-  // Daten laden
   async function ladeDashboard() {
     setLoading(true);
     try {
-      // Automaten
-      const automatenSnap = await getDocs(collection(db, "automaten"));
+      // Automatenbestand
+      const automatenSnap = await getDocs(collection(db, "Automatenbestand"));
       const alleAutomaten = automatenSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
       }));
       setAutomaten(alleAutomaten);
+
+      // Mapping maschinenCode/automatCode -> Dokument-ID
+      const map = {};
+      alleAutomaten.forEach((a) => {
+        const code = a.maschinenCode || a.automatCode || a.Automat;
+        if (code) {
+          map[code] = a.id;
+        }
+      });
+      setCodeToIdMap(map);
 
       // Wartungselemente
       const wartSnap = await getDocs(collection(db, "Wartungselemente"));
@@ -121,17 +130,16 @@ function AppDashboardReinigung() {
       });
       setWartungselementeMap(wartMap);
 
-      // Reinigungsprotokolle nach Datum + Stadt + Center
+      // Reinigungsprotokolle (Datum + Filter)
       const { start, end } = getStartEndOfDay(datum);
 
-      let reinigQuery = query(
-        collection(db, "reinigungen"),
-        where("datum", ">=", start),
-        where("datum", "<", end)
+      const reinigSnap = await getDocs(
+        query(
+          collection(db, "reinigungen"),
+          where("datum", ">=", start),
+          where("datum", "<", end)
+        )
       );
-
-      // Stadt/Center-Filter clientseitig anwenden (einfacher)
-      const reinigSnap = await getDocs(reinigQuery);
       let reinigData = reinigSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
@@ -143,7 +151,6 @@ function AppDashboardReinigung() {
       if (centerFilter !== "Alle Center") {
         reinigData = reinigData.filter((p) => p.center === centerFilter);
       }
-
       setProtokolle(reinigData);
 
       // Wochenwartung
@@ -157,16 +164,17 @@ function AppDashboardReinigung() {
         id: d.id,
         ...d.data(),
       }));
-
       const zielDatumStr = new Date(datum).toLocaleDateString("de-DE");
-      wartProt = wartProt.filter((p) => p.datumDerDurchfuehrung === zielDatumStr);
-
+      wartProt = wartProt.filter(
+        (p) => p.datumDerDurchfuehrung === zielDatumStr
+      );
       if (stadtFilter !== "Alle Städte") {
-        wartProt = wartProt.filter(
-          (p) => (p.standort || "").toLowerCase().includes(stadtFilter.toLowerCase())
+        wartProt = wartProt.filter((p) =>
+          (p.standort || "")
+            .toLowerCase()
+            .includes(stadtFilter.toLowerCase())
         );
       }
-
       setWartungsprotokolle(wartProt);
     } catch (err) {
       alert("Fehler beim Laden des Dashboards: " + err.message);
@@ -236,7 +244,6 @@ function AppDashboardReinigung() {
     };
   }
 
-  // Filteroptionen aus Automaten
   const staedte = useMemo(() => {
     const set = new Set();
     automaten.forEach((a) => {
@@ -257,7 +264,6 @@ function AppDashboardReinigung() {
     return Array.from(set).sort();
   }, [automaten, stadtFilter]);
 
-  // Protokolle sortiert + Suche
   const protokolleGefiltert = useMemo(() => {
     const feld = sortierungProtokolle.feld;
     const dir = sortierungProtokolle.richtung;
@@ -304,7 +310,6 @@ function AppDashboardReinigung() {
     });
   }
 
-  // Kennzahlen
   const totalAutomatenImFilter = useMemo(() => {
     let liste = automaten;
     if (stadtFilter !== "Alle Städte") {
@@ -313,7 +318,8 @@ function AppDashboardReinigung() {
     if (centerFilter !== "Alle Center") {
       liste = liste.filter((a) => a.center === centerFilter);
     }
-    return liste.filter((a) => a.automatCode || a.Automat).length;
+    return liste.filter((a) => a.maschinenCode || a.automatCode || a.Automat)
+      .length;
   }, [automaten, stadtFilter, centerFilter]);
 
   const abdeckungProzent = useMemo(() => {
@@ -326,7 +332,6 @@ function AppDashboardReinigung() {
     );
   }, [protokolle, totalAutomatenImFilter]);
 
-  // Fehlende Automaten
   const fehlendeAutomaten = useMemo(() => {
     const erledigte = new Set(protokolle.map((p) => p.automatCode));
     let liste = automaten;
@@ -337,19 +342,18 @@ function AppDashboardReinigung() {
       liste = liste.filter((a) => a.center === centerFilter);
     }
     return liste.filter((a) => {
-      const code = a.automatCode || a.Automat;
+      const code = a.maschinenCode || a.automatCode || a.Automat;
       return code && !erledigte.has(code);
     });
   }, [automaten, protokolle, stadtFilter, centerFilter]);
 
-  // Wartungsübersicht-Zahlen
   const wartungsSummary = useMemo(() => {
     let erledigt = 0;
     let teilweise = 0;
     let total = 0;
 
     automaten.forEach((a) => {
-      const code = a.automatCode || a.Automat;
+      const code = a.maschinenCode || a.automatCode || a.Automat;
       if (!code) return;
       total++;
       const info = wochenMap[code];
@@ -366,7 +370,6 @@ function AppDashboardReinigung() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datum, stadtFilter, centerFilter, wartungsAnsicht]);
 
-  // CSV-Export
   function exportCSV() {
     const d = datum;
     let csv =
@@ -408,7 +411,6 @@ function AppDashboardReinigung() {
     URL.revokeObjectURL(url);
   }
 
-  // Hilfsfunktionen für Farben
   function kpiColor(value) {
     if (value >= 90) return colors.success;
     if (value >= 75) return colors.warning;
@@ -655,10 +657,8 @@ function AppDashboardReinigung() {
               <div
                 style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}
               >
-                Wartung (aktuelle {wartungsAnsicht === "monat"
-                  ? "Monat"
-                  : "Woche"}
-                )
+                Wartung (aktuelle{" "}
+                {wartungsAnsicht === "monat" ? "Monat" : "Woche"})
               </div>
               <div
                 style={{
@@ -756,7 +756,7 @@ function AppDashboardReinigung() {
             </div>
           </div>
 
-          {/* Hauptbereich: links Protokolle, rechts Wartungen / Hinweise */}
+          {/* Hauptbereich */}
           <div
             style={{
               display: "grid",
@@ -919,9 +919,16 @@ function AppDashboardReinigung() {
                           <td style={{ padding: "6px 10px" }}>
                             <button
                               type="button"
-                              onClick={() =>
-                                navigate(`/automaten/${p.automatCode}`)
-                              }
+                              onClick={() => {
+                                const id = codeToIdMap[p.automatCode];
+                                if (id) {
+                                  navigate(`/automaten/${id}`);
+                                } else {
+                                  alert(
+                                    `Kein Automat mit Code ${p.automatCode} im Automatenbestand gefunden.`
+                                  );
+                                }
+                              }}
                               style={{
                                 padding: "4px 8px",
                                 borderRadius: 999,
@@ -997,7 +1004,7 @@ function AppDashboardReinigung() {
                     {fehlendeAutomaten.map((a) => (
                       <tr key={a.id}>
                         <td style={{ padding: "6px 10px" }}>
-                          {a.automatCode || a.Automat}
+                          {a.maschinenCode || a.automatCode || a.Automat}
                         </td>
                         <td style={{ padding: "6px 10px" }}>{a.stadt}</td>
                         <td style={{ padding: "6px 10px" }}>{a.center}</td>
@@ -1071,11 +1078,11 @@ function AppDashboardReinigung() {
                   </thead>
                   <tbody>
                     {automaten.map((a) => {
-                      const code = a.automatCode || a.Automat;
+                      const code = a.maschinenCode || a.automatCode || a.Automat;
                       if (!code) return null;
                       const info = wochenMap[code];
 
-                      let zeitraumText =
+                      const zeitraumText =
                         wartungsAnsicht === "monat" ? monthName : weekKey;
 
                       let statusText = "Kein Eintrag";
@@ -1177,9 +1184,16 @@ function AppDashboardReinigung() {
                         <td style={{ padding: "6px 8px" }}>
                           <button
                             type="button"
-                            onClick={() =>
-                              navigate(`/automaten/${w.automatCode}`)
-                            }
+                            onClick={() => {
+                              const id = codeToIdMap[w.automatCode];
+                              if (id) {
+                                navigate(`/automaten/${id}`);
+                              } else {
+                                alert(
+                                  `Kein Automat mit Code ${w.automatCode} im Automatenbestand gefunden.`
+                                );
+                              }
+                            }}
                             style={{
                               padding: "4px 8px",
                               borderRadius: 999,
