@@ -429,12 +429,14 @@ function AppDashboardReinigung() {
     return colors.danger;
   }
 
-  const datumObj = new Date(datum);
+   const datumObj = new Date(datum);
   const weekKey = getWeekKeyFromDate(datumObj);
   const monthName = datumObj.toLocaleDateString("de-DE", {
     month: "long",
     year: "numeric",
   });
+
+  console.log("Filter:", stadtFilter, centerFilter, wartungsAnsicht);
 
   return (
     <div
@@ -499,11 +501,12 @@ function AppDashboardReinigung() {
             Stadt
           </label>
           <select
-            value={stadtFilter}
-            onChange={(e) => {
-              setStadtFilter(e.target.value);
-              setCenterFilter("Alle Center");
-            }}
+  value={stadtFilter}
+  onChange={(e) => {
+    console.log("onChange Stadt:", e.target.value);
+    setStadtFilter(e.target.value);
+    setCenterFilter("Alle Center");
+  }}
             style={{
               padding: "6px 10px",
               borderRadius: 8,
