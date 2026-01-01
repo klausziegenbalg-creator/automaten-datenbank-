@@ -1,0 +1,174 @@
+/* =========================================================
+   Global Base (NO Vite demo styles)
+   ========================================================= */
+
+:root {
+  /* erzwingt helles Theme, verhindert schwarze Default-Buttons */
+  color-scheme: light;
+
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+
+  /* neutrales Basis-Hintergrund (deine Seite kann trotzdem eigene Farben setzen) */
+  background: #eaf2ff;
+  color: #0f172a;
+}
+
+/* Links */
+a {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 600;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* =========================================================
+   Controls: Buttons / Inputs / Selects (Basis)
+   ========================================================= */
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 14px;
+}
+
+/* Inputs / Selects / Textareas immer gut lesbar */
+input,
+select,
+textarea {
+  color: #0f172a;
+  background-color: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  cursor: pointer;
+}
+
+/* =========================================================
+   Buttons: Safe Defaults
+   -> überschreibt NICHT deine bewusst gestylten (bunten) Buttons
+   ========================================================= */
+
+/* Default-Buttons (ohne spezielle Klassen) bekommen neutrales Styling */
+button:not(.btn-primary):not(.btn-danger):not(.btn-success):not(.btn-warning) {
+  color: #0f172a;
+  background-color: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+
+button:not(.btn-primary):not(.btn-danger):not(.btn-success):not(.btn-warning):hover {
+  filter: brightness(0.98);
+}
+
+button:not(.btn-primary):not(.btn-danger):not(.btn-success):not(.btn-warning):active {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* =========================================================
+   Optional: Button-Klassen für gezielte Farben (empfohlen)
+   -> wenn du Buttons bewusst "bunt" willst: className setzen
+   ========================================================= */
+
+.btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid rgba(37, 99, 235, 0.4);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 900;
+}
+
+.btn-success {
+  background: #16a34a;
+  color: #ffffff;
+  border: 1px solid rgba(22, 163, 74, 0.4);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 900;
+}
+
+.btn-warning {
+  background: #f59e0b;
+  color: #ffffff;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 900;
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: #ffffff;
+  border: 1px solid rgba(220, 38, 38, 0.45);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 900;
+}
+
+/* Hover für bunte Buttons */
+.btn-primary:hover,
+.btn-success:hover,
+.btn-warning:hover,
+.btn-danger:hover {
+  filter: brightness(0.98);
+}
+
+/* =========================================================
+   Optional: Scrollbar clean
+   ========================================================= */
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #eaf2ff;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(37, 99, 235, 0.35);
+  border-radius: 6px;
+}

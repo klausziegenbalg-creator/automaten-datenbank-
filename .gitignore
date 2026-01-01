@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.vite/
+
+# env / secrets
+.env
+.env.*
+serviceAccountKey.json
+
+# misc
+.DS_Store

@@ -1,0 +1,136 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helpers ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Role comes from users/{uid}.role (users is lowercase!)
+    function myUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function myRole() {
+      return (signedIn() && exists(myUserPath()))
+        ? get(myUserPath()).data.role
+        : null;
+    }
+
+    function isPrivileged() {
+      return signedIn() && (myRole() in ['Admin', 'Supervisor', 'Owner']);
+    }
+
+    // ✅ PIN session: anonymous auth + custom token claim
+    function hasPinSession() {
+      return signedIn() && request.auth.token.pin_ok == true;
+    }
+
+    // ---------- users (klein!) ----------
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // ---------- Reinigungsdienst ----------
+    match /teams/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    match /team_assignments/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // ---------- Stammdaten / operative Daten (case exakt) ----------
+    match /Standorte/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    match /Kontakte/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // optional legacy lowercase
+    match /kontakte/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    match /Automatenbestand/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // ==========================================================
+    // PIN-App: öffentliche Webseite, aber Writes nur mit pin_ok
+    // ==========================================================
+
+    // Pins: NICHT öffentlich, nur serverseitig (Cloud Function) nutzen
+    match /pins/{id} {
+      allow read, write: if isPrivileged();
+    }
+
+    // Orte/Automaten (für Auswahl): darf öffentlich lesbar sein
+    match /automaten/{id} {
+      allow read: if true;
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // Wartungselemente: Checklisten, darf öffentlich lesbar sein
+    match /Wartungselemente/{id} {
+      allow read: if true;
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // ---------- Dashboard / Planung / Logs ----------
+    match /wochenWartung/{id} {
+      allow read: if signedIn(); // Dashboard + PIN-App nach Login
+      allow create, update: if hasPinSession() || isPrivileged();
+      allow delete: if isPrivileged();
+    }
+
+    match /Wartungsprotokolle/{id} {
+      allow read: if signedIn(); // Dashboard/Backoffice
+      allow create: if hasPinSession() || isPrivileged();
+      allow update, delete: if isPrivileged();
+    }
+
+    match /bestellungen/{id} {
+      allow read: if hasPinSession() || isPrivileged();
+      allow create: if hasPinSession() || isPrivileged();
+      allow update, delete: if isPrivileged();
+    }
+
+    match /reinigungen/{id} {
+      allow read: if signedIn(); // Backoffice
+      allow create: if hasPinSession() || isPrivileged();
+      allow update, delete: if isPrivileged();
+    }
+
+    match /abrechnungFlags/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // Keeping existing behavior (public read) for compatibility, tighten if desired
+    match /reinigungsdienst_automaten/{id} {
+      allow read: if true;
+      allow create, update, delete: if isPrivileged();
+    }
+
+    // ---------- Rowy (falls vorhanden) ----------
+    match /_rowy_/{document=**} {
+      allow read, write: if isPrivileged();
+    }
+
+    // ---------- Default deny ----------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
