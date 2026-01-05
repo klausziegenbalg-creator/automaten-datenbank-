@@ -12,3 +12,6 @@ serviceAccountKey.json
 
 # misc
 .DS_Store
+
+index.html.bak_pinfix
+src/AppAbrechnungalt.jsx
