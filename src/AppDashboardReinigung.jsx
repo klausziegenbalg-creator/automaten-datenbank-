@@ -5,8 +5,8 @@ import {
   query,
   where
 } from "firebase/firestore";
-import { db } from "../firebase";
-import { useAuth } from "../AuthContext";
+import { db } from "./firebase";
+import { useAuth } from "./AuthContext";
 
 export default function AppDashboardReinigung() {
   const { user, userMeta } = useAuth(); // userMeta = users/{uid}
