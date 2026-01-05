@@ -1,11 +1,20 @@
 // AppAbrechnung.jsx
-// ✅ Version: Hellblaues Theme + Accordion pro Teamleiter + PDF gut lesbar
-// ✅ Normalisierung gegen Leerzeichen/NBSP-Dopplungen
-// ✅ NUR lokal: Buttons/Felder nicht mehr "schwarz" in Abrechnung
-// ✅ PDF-Button mit Bild-Icon (public/pdf.png)
+// ✅ Abrechnung v2: 400 € pro Automat/Monat (Modus B: Abzug nur manuell), immer über Teamleiter
+// ✅ Monats-Plan (Mo–So) mit Checkboxen "Soll" + "Abzug" pro Tag
+// ✅ Übersichtskacheln (StatCards) beibehalten
+// ✅ PDF Export: Grundbetrag gekürzt nach Abzugstagen + Boni
+// ✅ Speichert Plan/Abzug in Firestore: collection "abrechnungMonat" (docId: `${monthKey}__${automatCode}`)
 
 import { useEffect, useMemo, useState } from "react";
-import { collection, doc, getDocs, query, setDoc, serverTimestamp, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  setDoc,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
 import { db } from "./firebase";
 
 import jsPDF from "jspdf";
@@ -13,8 +22,8 @@ import autoTable from "jspdf-autotable";
 
 // -------------------- Design (Hellblau) --------------------
 const colors = {
-  bg: "#cfe3ff",        // Markierungs-Blau
-  bgSoft: "#eaf2ff",    // noch heller für Verlauf
+  bg: "#cfe3ff",
+  bgSoft: "#eaf2ff",
 
   card: "#ffffff",
   cardSoft: "#f7fbff",
@@ -41,17 +50,67 @@ function normText(v) {
   return String(v).replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
 }
 function normalizeCode(raw) {
-  return normText(raw);
-}
-function getMonthRange(dateObj) {
-  const y = dateObj.getFullYear();
-  const m = dateObj.getMonth();
-  return { start: new Date(y, m, 1), end: new Date(y, m + 1, 1) };
+  return normText(raw).replace(/-/g, "");
 }
 function money(n) {
   return `${Number(n || 0).toFixed(2)} €`;
 }
+function getMonthKey(dateStr) {
+  const d = new Date(dateStr);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+function getMonthLabel(dateStr) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+}
+function getMonthStartEnd(dateStr) {
+  const d = new Date(dateStr);
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  return { start: new Date(y, m, 1), end: new Date(y, m + 1, 1) };
+}
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function sameMonth(dateObj, y, m0) {
+  return dateObj.getFullYear() === y && dateObj.getMonth() === m0;
+}
+function startOfWeekMonday(dateObj) {
+  const d = new Date(dateObj);
+  const day = (d.getDay() + 6) % 7; // Mon=0..Sun=6
+  d.setDate(d.getDate() - day);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function buildMonthWeeks(dateStr) {
+  const base = new Date(dateStr);
+  const y = base.getFullYear();
+  const m0 = base.getMonth();
 
+  const first = new Date(y, m0, 1);
+  const last = new Date(y, m0 + 1, 0);
+
+  let cursor = startOfWeekMonday(first);
+  const weeks = [];
+  while (cursor <= last || cursor.getDay() !== 1) {
+    const week = [];
+    for (let i = 0; i < 7; i++) {
+      week.push(new Date(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    weeks.push(week);
+    const next = new Date(cursor);
+    if (!sameMonth(next, y, m0) && next.getDay() === 1) break;
+  }
+  return weeks;
+}
+
+// -------------------- UI Bits --------------------
 function Pill({ children, active, onClick }) {
   return (
     <button
@@ -77,8 +136,9 @@ function StatCard({ title, value, sub }) {
   return (
     <div
       style={{
-        fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-      background: colors.card,
+        fontFamily:
+          '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        background: colors.card,
         border: `1px solid ${colors.border}`,
         borderRadius: 16,
         padding: 12,
@@ -87,9 +147,24 @@ function StatCard({ title, value, sub }) {
         flex: "1 1 220px",
       }}
     >
-      <div style={{ color: colors.textMuted, fontWeight: 900, fontSize: 12 }}>{title}</div>
-      <div style={{ color: colors.textMain, fontWeight: 950, fontSize: 22, marginTop: 6 }}>{value}</div>
-      {sub ? <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>{sub}</div> : null}
+      <div style={{ color: colors.textMuted, fontWeight: 900, fontSize: 12 }}>
+        {title}
+      </div>
+      <div
+        style={{
+          color: colors.textMain,
+          fontWeight: 950,
+          fontSize: 22,
+          marginTop: 6,
+        }}
+      >
+        {value}
+      </div>
+      {sub ? (
+        <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>
+          {sub}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -148,10 +223,14 @@ function exportPdf({ monthLabel, mode, byTL, total, grundSatz }) {
 
   let y = mode === "zwischen" ? 102 : 86;
 
-  const teamleiterNames = Array.from(byTL.keys()).sort((a, b) => a.localeCompare(b, "de"));
+  const teamleiterNames = Array.from(byTL.keys()).sort((a, b) =>
+    a.localeCompare(b, "de")
+  );
 
   for (const tl of teamleiterNames) {
-    const rows = (byTL.get(tl) || []).sort((a, b) => a.automatCode.localeCompare(b.automatCode));
+    const rows = (byTL.get(tl) || []).sort((a, b) =>
+      a.automatCode.localeCompare(b.automatCode)
+    );
     const sumTl = rows.reduce((s, r) => s + r.summe, 0);
 
     docPdf.setFont("helvetica", "bold");
@@ -162,11 +241,27 @@ function exportPdf({ monthLabel, mode, byTL, total, grundSatz }) {
     autoTable(docPdf, {
       startY: y,
       margin: { left: 40, right: 40 },
-      head: [["Automat", "Center", "Stadt", "Grund", "Bonus Wochen", "Bonus Montag", "Summe"]],
+      head: [
+        [
+          "Automat",
+          "Center",
+          "Stadt",
+          "Monat",
+          "SollTage",
+          "Abzug",
+          "Grund (gekürzt)",
+          "Bonus Wochen",
+          "Bonus Montag",
+          "Summe",
+        ],
+      ],
       body: rows.map((r) => [
         r.automatCode,
         r.center || "",
         r.stadt || "",
+        money(400),
+        String(r.sollTage || 0),
+        String(r.abzugTage || 0),
         money(r.grund),
         money(r.bonusWochen),
         money(r.bonusMontag),
@@ -175,9 +270,9 @@ function exportPdf({ monthLabel, mode, byTL, total, grundSatz }) {
       theme: "grid",
       styles: {
         font: "helvetica",
-        fontSize: 9,
+        fontSize: 8.5,
         textColor: [0, 0, 0],
-        cellPadding: 6,
+        cellPadding: 5,
         lineColor: [220, 220, 220],
         lineWidth: 0.5,
       },
@@ -186,9 +281,7 @@ function exportPdf({ monthLabel, mode, byTL, total, grundSatz }) {
         textColor: [255, 255, 255],
         fontStyle: "bold",
       },
-      alternateRowStyles: {
-        fillColor: [245, 246, 248],
-      },
+      alternateRowStyles: { fillColor: [245, 246, 248] },
     });
 
     y = (docPdf.lastAutoTable?.finalY || y) + 14;
@@ -236,64 +329,13 @@ export default function AppAbrechnung() {
   const [wartungselementeMap, setWartungselementeMap] = useState({});
   const [wochenDocs, setWochenDocs] = useState([]);
   const [abrechnungFlags, setAbrechnungFlags] = useState({});
+  const [monthDocs, setMonthDocs] = useState({}); // docId -> {plan, abzug, ...}
 
   const [openTL, setOpenTL] = useState({});
   const [expandedAutomat, setExpandedAutomat] = useState({});
 
-  async function loadAll() {
-    setLoading(true);
-    try {
-      const aSnap = await getDocs(collection(db, "automaten"));
-      const aList = aSnap.docs.map((d) => {
-        const data = d.data() || {};
-        return {
-          id: d.id,
-          ...data,
-          automatCode: normalizeCode(data.automatCode || data.Automat),
-          stadt: normText(data.stadt),
-          center: normText(data.center),
-          leitung: normText(data.leitung),
-          leiter: normText(data.leiter),
-        };
-      });
-      setAutomaten(aList);
-
-      const weSnap = await getDocs(collection(db, "Wartungselemente"));
-      const weMap = {};
-      weSnap.forEach((ds) => (weMap[ds.id] = ds.data()));
-      setWartungselementeMap(weMap);
-
-      const dObj = new Date(datum);
-      const { start, end } = getMonthRange(dObj);
-
-      const wwSnap = await getDocs(
-        query(collection(db, "wochenWartung"), where("startedAt", ">=", start), where("startedAt", "<", end))
-      );
-      const wwList = wwSnap.docs.map((ds) => {
-        const data = ds.data() || {};
-        return { id: ds.id, ...data, automatCode: normalizeCode(data.automatCode), woche: normText(data.woche) };
-      });
-      setWochenDocs(wwList);
-
-      const fSnap = await getDocs(collection(db, "abrechnungFlags"));
-      const fMap = {};
-      fSnap.forEach((ds) => {
-        const d = ds.data() || {};
-        const key = `${normText(d.woche)}__${normalizeCode(d.automatCode)}`;
-        fMap[key] = d;
-      });
-      setAbrechnungFlags(fMap);
-    } catch (e) {
-      alert(`Fehler beim Laden: ${e?.message || String(e)}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datum]);
+  const monthKey = useMemo(() => getMonthKey(datum), [datum]);
+  const monthLabel = useMemo(() => getMonthLabel(datum), [datum]);
 
   function isWochenwartungTaskId(id) {
     return String(wartungselementeMap?.[id]?.typ || "") === "Wochenwartung";
@@ -305,6 +347,83 @@ export default function AppAbrechnung() {
     if (ids.length === 0) return false;
     return ids.every((id) => tasks[id]?.done === true);
   }
+
+  async function loadAll() {
+    setLoading(true);
+    try {
+      // Automaten
+      const aSnap = await getDocs(collection(db, "automaten"));
+      const aList = aSnap.docs.map((d) => {
+        const data = d.data() || {};
+        return {
+          id: d.id,
+          ...data,
+          automatCode: normalizeCode(data.automatCode || data.Automat),
+          stadt: normText(data.stadt),
+          center: normText(data.center),
+          // Teamleiter kommt aus Automat (bestehende Struktur). Später kann das auf Teams/Assignments umgezogen werden.
+          teamleiter: normText(data.leitung || data.leiter),
+        };
+      });
+      setAutomaten(aList);
+
+      // Wartungselemente
+      const weSnap = await getDocs(collection(db, "Wartungselemente"));
+      const weMap = {};
+      weSnap.forEach((ds) => (weMap[ds.id] = ds.data()));
+      setWartungselementeMap(weMap);
+
+      const { start, end } = getMonthStartEnd(datum);
+
+      // Wochenwartung-Dokumente
+      const wwSnap = await getDocs(
+        query(
+          collection(db, "wochenWartung"),
+          where("startedAt", ">=", start),
+          where("startedAt", "<", end)
+        )
+      );
+      const wwList = wwSnap.docs.map((ds) => {
+        const data = ds.data() || {};
+        return {
+          id: ds.id,
+          ...data,
+          automatCode: normalizeCode(data.automatCode),
+          woche: normText(data.woche),
+        };
+      });
+      setWochenDocs(wwList);
+
+      // Flags (Montag pünktlich)
+      const fSnap = await getDocs(collection(db, "abrechnungFlags"));
+      const fMap = {};
+      fSnap.forEach((ds) => {
+        const d = ds.data() || {};
+        const key = `${normText(d.woche)}__${normalizeCode(d.automatCode)}`;
+        fMap[key] = d;
+      });
+      setAbrechnungFlags(fMap);
+
+      // Monatsplan / Abzug
+      const mSnap = await getDocs(
+        query(collection(db, "abrechnungMonat"), where("monthKey", "==", monthKey))
+      );
+      const mMap = {};
+      mSnap.forEach((ds) => {
+        mMap[ds.id] = ds.data() || {};
+      });
+      setMonthDocs(mMap);
+    } catch (e) {
+      alert(`Fehler beim Laden: ${e?.message || String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datum]);
 
   async function setMontagFlag({ woche, automatCode, value }) {
     const code = normalizeCode(automatCode);
@@ -323,6 +442,81 @@ export default function AppAbrechnung() {
     }));
   }
 
+  function getMonthDocId(automatCode) {
+    return `${monthKey}__${normalizeCode(automatCode)}`;
+  }
+
+  async function updateMonthDoc({ automatCode, patch }) {
+    const code = normalizeCode(automatCode);
+    const id = `${monthKey}__${code}`;
+    const base = monthDocs[id] || {};
+    const next = { ...base, ...patch };
+
+    await setDoc(
+      doc(db, "abrechnungMonat", id),
+      {
+        monthKey,
+        automatCode: code,
+        updatedAt: serverTimestamp(),
+        ...next,
+      },
+      { merge: true }
+    );
+
+    setMonthDocs((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...next, monthKey, automatCode: code } }));
+  }
+
+  function ensureMap(obj) {
+    return obj && typeof obj === "object" ? obj : {};
+  }
+
+  function getPlanFor(automatCode) {
+    const id = getMonthDocId(automatCode);
+    const d = monthDocs[id] || {};
+    return ensureMap(d.plan);
+  }
+  function getAbzugFor(automatCode) {
+    const id = getMonthDocId(automatCode);
+    const d = monthDocs[id] || {};
+    return ensureMap(d.abzug);
+  }
+
+  function countBoolMap(map, onlyWherePlanTrue, planMap) {
+    const keys = Object.keys(map || {});
+    if (!onlyWherePlanTrue) return keys.filter((k) => map[k] === true).length;
+    const p = planMap || {};
+    return keys.filter((k) => p[k] === true && map[k] === true).length;
+  }
+
+  function getSollCount(planMap) {
+    return Object.keys(planMap || {}).filter((k) => planMap[k] === true).length;
+  }
+
+  function applyTemplate({ automatCode, kind }) {
+    const weeks = buildMonthWeeks(datum);
+    const plan = {};
+    const firstInMonth = new Date(new Date(datum).getFullYear(), new Date(datum).getMonth(), 1);
+    let toggle = 0;
+
+    for (const w of weeks) {
+      for (const d of w) {
+        if (!sameMonth(d, firstInMonth.getFullYear(), firstInMonth.getMonth())) continue;
+        const key = isoDate(d);
+        const dow = (d.getDay() + 6) % 7; // Mon=0..Sun=6
+
+        if (kind === "daily") plan[key] = true;
+        else if (kind === "clear") plan[key] = false;
+        else if (kind === "monwedfri") plan[key] = dow === 0 || dow === 2 || dow === 4;
+        else if (kind === "every2") {
+          plan[key] = toggle % 2 === 0;
+          toggle += 1;
+        }
+      }
+    }
+
+    updateMonthDoc({ automatCode, patch: { plan } });
+  }
+
   const staedte = useMemo(() => {
     const s = new Set();
     automaten.forEach((a) => a.stadt && s.add(a.stadt));
@@ -330,7 +524,10 @@ export default function AppAbrechnung() {
   }, [automaten]);
 
   const centerOptions = useMemo(() => {
-    const basis = stadtFilter !== "Alle Städte" ? automaten.filter((a) => a.stadt === stadtFilter) : automaten;
+    const basis =
+      stadtFilter !== "Alle Städte"
+        ? automaten.filter((a) => a.stadt === stadtFilter)
+        : automaten;
     const s = new Set();
     basis.forEach((a) => a.center && s.add(a.center));
     return Array.from(s).sort((a, b) => a.localeCompare(b, "de"));
@@ -339,22 +536,19 @@ export default function AppAbrechnung() {
   const teamleiterOptions = useMemo(() => {
     const s = new Set();
     automaten.forEach((a) => {
-      const tl = normText(a.leitung || a.leiter);
+      const tl = normText(a.teamleiter);
       if (tl) s.add(tl);
     });
     return Array.from(s).sort((a, b) => a.localeCompare(b, "de"));
   }, [automaten]);
 
   const abrechnung = useMemo(() => {
-    const dObj = new Date(datum);
-    const monthLabel = dObj.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
-
     let basis = automaten
       .map((a) => ({
         automatCode: normalizeCode(a.automatCode || a.Automat),
         stadt: normText(a.stadt),
         center: normText(a.center),
-        teamleiter: normText(a.leitung || a.leiter),
+        teamleiter: normText(a.teamleiter),
       }))
       .filter((x) => x.automatCode && x.teamleiter);
 
@@ -393,7 +587,15 @@ export default function AppAbrechnung() {
 
     const lines = basis.map((a) => {
       const weeks = byAutomat.get(a.automatCode) || [];
-      const grund = grundSatz;
+
+      const planMap = getPlanFor(a.automatCode);
+      const abzugMap = getAbzugFor(a.automatCode);
+
+      const sollTage = getSollCount(planMap);
+      const abzugTage = countBoolMap(abzugMap, true, planMap);
+
+      const tagAnteil = sollTage > 0 ? 400 / sollTage : 0;
+      const grundGekuerzt = Math.max(0, 400 - tagAnteil * abzugTage);
 
       let bonusWochen = 0;
       let bonusMontag = 0;
@@ -410,7 +612,7 @@ export default function AppAbrechnung() {
         }
       }
 
-      const summe = grund + bonusWochen + bonusMontag;
+      const summe = grundGekuerzt + bonusWochen + bonusMontag;
       const weeksSorted = [...weeks].sort((x, y) => String(x.woche || "").localeCompare(String(y.woche || "")));
 
       const alleWochenOk = weeks.length > 0 && weeks.every(isWeekComplete);
@@ -418,7 +620,19 @@ export default function AppAbrechnung() {
         weeks.length > 0 &&
         weeks.every((w) => abrechnungFlags?.[`${normText(w.woche)}__${a.automatCode}`]?.montagPuenktlich === true);
 
-      return { ...a, grund, bonusWochen, bonusMontag, summe, weeks: weeksSorted, alleWochenOk, alleMontagOk };
+      return {
+        ...a,
+        grund: grundGekuerzt,
+        bonusWochen,
+        bonusMontag,
+        summe,
+        weeks: weeksSorted,
+        alleWochenOk,
+        alleMontagOk,
+        sollTage,
+        abzugTage,
+        tagAnteil,
+      };
     });
 
     const byTL = new Map();
@@ -439,7 +653,187 @@ export default function AppAbrechnung() {
       automatenCount: lines.length,
       teamleiterCount: byTL.size,
     };
-  }, [datum, mode, automaten, wochenDocs, abrechnungFlags, wartungselementeMap, stadtFilter, centerFilter, teamleiterFilter, search]);
+  }, [
+    monthLabel,
+    datum,
+    mode,
+    automaten,
+    wochenDocs,
+    abrechnungFlags,
+    wartungselementeMap,
+    stadtFilter,
+    centerFilter,
+    teamleiterFilter,
+    search,
+    monthDocs,
+  ]);
+
+  useEffect(() => {
+    const names = Array.from(abrechnung.byTL.keys()).sort((a, b) => a.localeCompare(b, "de"));
+    if (names.length === 0) return;
+    setOpenTL((prev) => {
+      if (Object.keys(prev).length > 0) return prev;
+      return { [names[0]]: true };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abrechnung.byTL]);
+
+  const weeksForMonth = useMemo(() => buildMonthWeeks(datum), [datum]);
+
+  function renderMonthTable({ automatCode }) {
+    const code = normalizeCode(automatCode);
+    const planMap = getPlanFor(code);
+    const abzugMap = getAbzugFor(code);
+
+    const setPlan = async (dateKey, value) => {
+      const next = { ...planMap, [dateKey]: !!value };
+      const nextAbzug = { ...abzugMap, ...(value ? {} : { [dateKey]: false }) };
+      await updateMonthDoc({ automatCode: code, patch: { plan: next, abzug: nextAbzug } });
+    };
+
+    const setAbzug = async (dateKey, value) => {
+      const next = { ...abzugMap, [dateKey]: !!value };
+      await updateMonthDoc({ automatCode: code, patch: { abzug: next } });
+    };
+
+    const first = new Date(datum);
+    const y = first.getFullYear();
+    const m0 = first.getMonth();
+
+    const head = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+    return (
+      <div
+        style={{
+          border: `1px solid ${colors.border}`,
+          background: colors.cardSoft,
+          borderRadius: 16,
+          padding: 10,
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ fontWeight: 950 }}>
+            Monatsplan (Mo–So): Soll reinigen + Abzug
+            <span style={{ marginLeft: 10, color: colors.textMuted, fontWeight: 900, fontSize: 12 }}>
+              Monat: {monthLabel} · Automat: {code}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Pill active={false} onClick={() => applyTemplate({ automatCode: code, kind: "daily" })}>Vorlage: täglich</Pill>
+            <Pill active={false} onClick={() => applyTemplate({ automatCode: code, kind: "every2" })}>Vorlage: alle 2 Tage</Pill>
+            <Pill active={false} onClick={() => applyTemplate({ automatCode: code, kind: "monwedfri" })}>Vorlage: Mo/Mi/Fr</Pill>
+            <Pill active={false} onClick={() => applyTemplate({ automatCode: code, kind: "clear" })}>Vorlage: alles aus</Pill>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 6, minWidth: 780 }}>
+            <thead>
+              <tr>
+                {head.map((h) => (
+                  <th key={h} style={{ textAlign: "center", fontSize: 12, fontWeight: 950, color: colors.textMuted }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {weeksForMonth.map((week, wi) => (
+                <tr key={wi}>
+                  {week.map((d, di) => {
+                    const inMonth = sameMonth(d, y, m0);
+                    const key = isoDate(d);
+                    const soll = !!planMap[key];
+                    const abzug = !!abzugMap[key];
+
+                    return (
+                      <td
+                        key={di}
+                        style={{
+                          verticalAlign: "top",
+                          border: `1px solid ${colors.border}`,
+                          borderRadius: 12,
+                          padding: 8,
+                          background: inMonth ? "#fff" : "rgba(255,255,255,0.55)",
+                          opacity: inMonth ? 1 : 0.6,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <div style={{ fontWeight: 950, fontSize: 13 }}>{d.getDate()}</div>
+                          <div style={{ fontSize: 11, color: colors.textMuted, fontWeight: 900 }}>{inMonth ? "" : "—"}</div>
+                        </div>
+
+                        {inMonth ? (
+                          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, fontSize: 12, cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={soll}
+                                onChange={(e) => setPlan(key, e.target.checked)}
+                              />
+                              Soll
+                            </label>
+
+                            <label
+                              style={{
+                                display: "flex",
+                                gap: 8,
+                                alignItems: "center",
+                                fontWeight: 900,
+                                fontSize: 12,
+                                cursor: soll ? "pointer" : "not-allowed",
+                                color: soll ? colors.textMain : colors.textMuted,
+                              }}
+                              title={soll ? "Abzug setzen" : "Abzug nur möglich wenn Soll aktiv ist"}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={abzug}
+                                disabled={!soll}
+                                onChange={(e) => setAbzug(key, e.target.checked)}
+                              />
+                              Abzug
+                            </label>
+                          </div>
+                        ) : null}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {(() => {
+            const sollTage = getSollCount(planMap);
+            const abzugTage = countBoolMap(abzugMap, true, planMap);
+            const tagAnteil = sollTage > 0 ? 400 / sollTage : 0;
+            const grund = Math.max(0, 400 - tagAnteil * abzugTage);
+
+            return (
+              <>
+                <div style={{ fontWeight: 900, color: colors.textMuted, fontSize: 12 }}>
+                  Soll-Tage: <span style={{ color: colors.textMain }}>{sollTage}</span>
+                </div>
+                <div style={{ fontWeight: 900, color: colors.textMuted, fontSize: 12 }}>
+                  Abzug-Tage: <span style={{ color: colors.textMain }}>{abzugTage}</span>
+                </div>
+                <div style={{ fontWeight: 900, color: colors.textMuted, fontSize: 12 }}>
+                  Anteil pro Soll-Tag: <span style={{ color: colors.textMain }}>{money(tagAnteil)}</span>
+                </div>
+                <div style={{ fontWeight: 950, color: colors.textMain, fontSize: 12 }}>
+                  Grund (gekürzt): <span style={{ fontSize: 13 }}>{money(grund)}</span>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    );
+  }
 
   useEffect(() => {
     const names = Array.from(abrechnung.byTL.keys()).sort((a, b) => a.localeCompare(b, "de"));
@@ -489,7 +883,6 @@ export default function AppAbrechnung() {
               </Pill>
             </div>
 
-            {/* Felder in Abrechnung: bewusst hell (kein "schwarz") */}
             <input
               type="date"
               value={datum}
@@ -631,12 +1024,28 @@ export default function AppAbrechnung() {
           </div>
         </div>
 
-        {/* KPI */}
+        {/* KPI (bitte so lassen) */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-          <StatCard title="Zeitraum" value={abrechnung.monthLabel} sub={mode === "zwischen" ? "Zwischenabrechnung (15.)" : "Monatsabrechnung"} />
-          <StatCard title="Grundbetrag pro Automat" value={money(abrechnung.grundSatz)} sub={mode === "zwischen" ? "Halbe Grundpauschale" : "Voll"} />
-          <StatCard title="Automaten" value={String(abrechnung.automatenCount)} sub={`Teamleiter: ${abrechnung.teamleiterCount}`} />
-          <StatCard title="Gesamtsumme" value={money(abrechnung.total)} sub={mode === "monat" ? "inkl. Boni (wenn erfüllt)" : "ohne Boni"} />
+          <StatCard
+            title="Zeitraum"
+            value={abrechnung.monthLabel}
+            sub={mode === "zwischen" ? "Zwischenabrechnung (15.)" : "Monatsabrechnung"}
+          />
+          <StatCard
+            title="Grundbetrag pro Automat"
+            value={money(400)}
+            sub="Monatspauschale (kürzbar über Abzug-Tage)"
+          />
+          <StatCard
+            title="Automaten"
+            value={String(abrechnung.automatenCount)}
+            sub={`Teamleiter: ${abrechnung.teamleiterCount}`}
+          />
+          <StatCard
+            title="Gesamtsumme"
+            value={money(abrechnung.total)}
+            sub={mode === "monat" ? "inkl. Boni (wenn erfüllt)" : "ohne Boni"}
+          />
         </div>
 
         {/* Accordion */}
@@ -644,7 +1053,9 @@ export default function AppAbrechnung() {
           {Array.from(abrechnung.byTL.keys())
             .sort((a, b) => a.localeCompare(b, "de"))
             .map((tl) => {
-              const rows = (abrechnung.byTL.get(tl) || []).sort((a, b) => a.automatCode.localeCompare(b.automatCode));
+              const rows = (abrechnung.byTL.get(tl) || []).sort((a, b) =>
+                a.automatCode.localeCompare(b.automatCode)
+              );
               const sumTl = rows.reduce((s, r) => s + r.summe, 0);
 
               const isOpen = !!openTL[tl];
@@ -697,7 +1108,7 @@ export default function AppAbrechnung() {
                       <div
                         style={{
                           display: "grid",
-                          gridTemplateColumns: "160px 1fr 140px 140px",
+                          gridTemplateColumns: "160px 1fr 220px 140px",
                           gap: 10,
                           padding: "10px 10px",
                           borderRadius: 14,
@@ -741,7 +1152,7 @@ export default function AppAbrechnung() {
                                   color: colors.textMain,
                                   cursor: "pointer",
                                   display: "grid",
-                                  gridTemplateColumns: "160px 1fr 140px 140px",
+                                  gridTemplateColumns: "160px 1fr 220px 140px",
                                   gap: 10,
                                   alignItems: "center",
                                 }}
@@ -759,6 +1170,7 @@ export default function AppAbrechnung() {
                                     <>
                                       <IconBadge ok={r.alleWochenOk} label="Bonus Wochen" />
                                       <IconBadge ok={r.alleMontagOk} label="Bonus Montag" />
+                                      <IconBadge ok={r.abzugTage === 0} label={`Abzug: ${r.abzugTage}`} />
                                     </>
                                   ) : (
                                     <span style={{ color: colors.textMuted, fontWeight: 900 }}>—</span>
@@ -780,11 +1192,16 @@ export default function AppAbrechnung() {
                                   }}
                                 >
                                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                                    <StatCard title="Grund" value={money(r.grund)} />
+                                    <StatCard title="Monat (fix)" value={money(400)} sub="Basis für Kürzung" />
+                                    <StatCard title="Soll-Tage" value={String(r.sollTage || 0)} sub="Plan (Mo–So)" />
+                                    <StatCard title="Abzug-Tage" value={String(r.abzugTage || 0)} sub="nur manuell" />
+                                    <StatCard title="Grund (gekürzt)" value={money(r.grund)} sub={`Anteil: ${money(r.tagAnteil)}`} />
                                     <StatCard title="Bonus Wochen" value={money(r.bonusWochen)} sub="Nur Monatsende" />
                                     <StatCard title="Bonus Montag" value={money(r.bonusMontag)} sub="Nur Monatsende" />
                                     <StatCard title="Summe" value={money(r.summe)} />
                                   </div>
+
+                                  {renderMonthTable({ automatCode: r.automatCode })}
 
                                   <div
                                     style={{
@@ -881,7 +1298,7 @@ export default function AppAbrechnung() {
         </div>
 
         <div style={{ marginTop: 14, color: colors.textMuted, fontSize: 12, fontWeight: 800 }}>
-          Monatsabrechnung: 400 € + ggf. Boni. Zwischenabrechnung (15.): 200 € (halbe Grundpauschale), 50% der Automaten, keine Boni.
+          Monatsabrechnung: 400 € pro Automat/Monat (kürzbar nach Plan/Abzug). Zwischenabrechnung (15.): Anzeige wie bisher (200 € Hinweis), keine Boni.
         </div>
       </div>
     </div>

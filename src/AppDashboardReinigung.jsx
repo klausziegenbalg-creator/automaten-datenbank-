@@ -5,8 +5,9 @@
 // ✅ "Erledigt" Button bleibt (setzt erledigt=true, erledigtAm, status="erledigt")
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, doc, getDocs, query, updateDoc, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
 import { db } from "./firebase";
 
 const colors = {
@@ -356,7 +357,46 @@ function isOrderDone(order) {
 
 export default function AppDashboardReinigung() {
   const navigate = useNavigate();
-  const tableAnchorRef = useRef(null);
+  
+  // ------------------------------------------------------------
+  // Teamleiter: Rolle + Stadt aus users/{uid} laden
+  // ------------------------------------------------------------
+  useEffect(() => {
+    (async () => {
+      try {
+        const auth = getAuth();
+        const u = auth.currentUser;
+        if (!u) {
+          setMyRole(null);
+          setMyCity(null);
+          return;
+        }
+
+        const snap = await getDoc(doc(db, "users", u.uid));
+        const data = snap.exists() ? snap.data() : null;
+
+        const role = data?.role ?? data?.rolle ?? null;
+        const city = data?.stadt ?? null;
+
+        setMyRole(role);
+        setMyCity(city || null);
+
+        if (role === "Teamleiter" && city) {
+          setStadtFilter(city);
+          setCenterFilter("Alle Center");
+        }
+      } catch (err) {
+        console.error("Fehler beim Laden der Teamleiter-Stadt:", err);
+        setMyRole(null);
+        setMyCity(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+const tableAnchorRef = useRef(null);
+  const [myRole, setMyRole] = useState(null);
+  const [myCity, setMyCity] = useState(null);
+
 
   const [loading, setLoading] = useState(false);
   const [busyOrderId, setBusyOrderId] = useState(null);
@@ -441,15 +481,26 @@ export default function AppDashboardReinigung() {
     const { start: wStart, end: wEnd } = getWeekRange(datumObj);
 
     if (wartungsAnsicht === "woche") {
-      let snap = await getDocs(query(collection(db, "wochenWartung"), where("woche", "==", weekKey)));
+      let snap = await getDocs(
+        myRole === "Teamleiter" && myCity
+          ? query(collection(db, "wochenWartung"), where("woche", "==", weekKey), where("stadt", "==", myCity))
+          : query(collection(db, "wochenWartung"), where("woche", "==", weekKey))
+      );
 
       if (snap.empty) {
         snap = await getDocs(
-          query(
-            collection(db, "wochenWartung"),
-            where("startedAt", ">=", wStart),
-            where("startedAt", "<=", wEnd)
-          )
+          myRole === "Teamleiter" && myCity
+            ? query(
+                collection(db, "wochenWartung"),
+                where("startedAt", ">=", wStart),
+                where("startedAt", "<=", wEnd),
+                where("stadt", "==", myCity)
+              )
+            : query(
+                collection(db, "wochenWartung"),
+                where("startedAt", ">=", wStart),
+                where("startedAt", "<=", wEnd)
+              )
         );
       }
 
@@ -483,7 +534,11 @@ export default function AppDashboardReinigung() {
   }
 
   async function ladeBestellungen() {
-    const snap = await getDocs(collection(db, "bestellungen"));
+    const snap = await getDocs(
+      myRole === "Teamleiter" && myCity
+        ? query(collection(db, "bestellungen"), where("stadt", "==", myCity))
+        : collection(db, "bestellungen")
+    );
     const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     data.sort((a, b) => {
@@ -497,6 +552,10 @@ export default function AppDashboardReinigung() {
 
   async function setBestellungErledigt(order) {
     if (!order?.id) return;
+    if (myRole === "Teamleiter") {
+      alert("Teamleiter hat nur Leserechte.");
+      return;
+    }
     try {
       setBusyOrderId(order.id);
       const ref = doc(db, "bestellungen", order.id);
@@ -526,7 +585,11 @@ export default function AppDashboardReinigung() {
       const alleAutomaten = automatenSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAutomaten(alleAutomaten);
 
-      const bestandSnap = await getDocs(collection(db, "Automatenbestand"));
+      const bestandSnap = await getDocs(
+        myRole === "Teamleiter" && myCity
+          ? query(collection(db, "Automatenbestand"), where("stadt", "==", myCity))
+          : collection(db, "Automatenbestand")
+      );
       const bestand = bestandSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const mapCodeToId = {};
       bestand.forEach((a) => {
@@ -542,7 +605,8 @@ export default function AppDashboardReinigung() {
 
       const { start, end } = getStartEndOfDay(datum);
       let qReinigung = query(collection(db, "reinigungen"), where("datum", ">=", start), where("datum", "<", end));
-      if (stadtFilter !== "Alle Städte") qReinigung = query(qReinigung, where("stadt", "==", stadtFilter));
+      if (myRole === "Teamleiter" && myCity) qReinigung = query(qReinigung, where("stadt", "==", myCity));
+      else if (stadtFilter !== "Alle Städte") qReinigung = query(qReinigung, where("stadt", "==", stadtFilter));
       if (centerFilter !== "Alle Center") qReinigung = query(qReinigung, where("center", "==", centerFilter));
 
       const reinigSnap = await getDocs(qReinigung);
@@ -550,7 +614,11 @@ export default function AppDashboardReinigung() {
 
       await ladeWochenWartung(new Date(datum));
 
-      const wartungsProtSnap = await getDocs(collection(db, "Wartungsprotokolle"));
+      const wartungsProtSnap = await getDocs(
+        myRole === "Teamleiter" && myCity
+          ? query(collection(db, "Wartungsprotokolle"), where("stadt", "==", myCity))
+          : collection(db, "Wartungsprotokolle")
+      );
       let wartProt = wartungsProtSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       const { start: wStart, end: wEnd } = getWeekRange(new Date(datum));
@@ -575,7 +643,7 @@ export default function AppDashboardReinigung() {
   useEffect(() => {
     ladeDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datum, stadtFilter, centerFilter, wartungsAnsicht]);
+  }, [datum, stadtFilter, centerFilter, wartungsAnsicht, myRole, myCity]);
 
   const staedte = useMemo(() => {
     const set = new Set();
