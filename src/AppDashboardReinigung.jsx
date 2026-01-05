@@ -389,6 +389,8 @@ export default function AppDashboardReinigung() {
         console.error("Fehler beim Laden der Teamleiter-Stadt:", err);
         setMyRole(null);
         setMyCity(null);
+      } finally {
+        setUserMetaLoaded(true);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -396,6 +398,8 @@ export default function AppDashboardReinigung() {
 const tableAnchorRef = useRef(null);
   const [myRole, setMyRole] = useState(null);
   const [myCity, setMyCity] = useState(null);
+  const [userMetaLoaded, setUserMetaLoaded] = useState(false);
+
 
 
   const [loading, setLoading] = useState(false);
@@ -580,6 +584,13 @@ const tableAnchorRef = useRef(null);
 
   async function ladeDashboard() {
     setLoading(true);
+
+    // Teamleiter: ohne geladene Stadt nichts laden (sonst würden unscoped Queries an Firestore gehen).
+    if (myRole === "Teamleiter" && !myCity) {
+      setLoading(false);
+      return;
+    }
+
     try {
       const automatenSnap = await getDocs(collection(db, "automaten"));
       const alleAutomaten = automatenSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -641,9 +652,13 @@ const tableAnchorRef = useRef(null);
   }
 
   useEffect(() => {
+    // Für Teamleiter erst laden, wenn Rolle+Stadt aus users/{uid} bekannt sind.
+    if (!userMetaLoaded) return;
+    if (myRole === "Teamleiter" && !myCity) return;
+
     ladeDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datum, stadtFilter, centerFilter, wartungsAnsicht, myRole, myCity]);
+  }, [datum, stadtFilter, centerFilter, wartungsAnsicht, myRole, myCity, userMetaLoaded]);
 
   const staedte = useMemo(() => {
     const set = new Set();
