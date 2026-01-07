@@ -7,10 +7,10 @@ const admin = require("firebase-admin");
 admin.initializeApp();
 const db = admin.firestore();
 
-/* =========================================================
-   Bestehende Logik – UNVERÄNDERT
-   ========================================================= */
-
+/**
+ * Quelle der Wahrheit für Center/Stadt:
+ * Automatenbestand.automatCode -> (centername, standort, standortId)
+ */
 async function getBestand(automatCode) {
   const snap = await db
     .collection("Automatenbestand")
@@ -22,6 +22,9 @@ async function getBestand(automatCode) {
   return snap.docs[0].data();
 }
 
+/**
+ * Fallback: Spiegel "automaten" (wird via syncAutomatenFromReinigungsdienst gepflegt)
+ */
 async function getAutomatMirror(automatCode) {
   const snap = await db
     .collection("automaten")
@@ -33,6 +36,9 @@ async function getAutomatMirror(automatCode) {
   return snap.docs[0].data();
 }
 
+/**
+ * Zentrale Ableitung: stadt/center/standortId aus automatCode holen
+ */
 async function deriveLocationFromAutomatCode(automatCode) {
   if (!automatCode) return { stadt: "", center: "", standortId: null };
 
@@ -57,80 +63,231 @@ async function deriveLocationFromAutomatCode(automatCode) {
   return { stadt: "", center: "", standortId: null };
 }
 
-/* =========================================================
-   sync + enrich – UNVERÄNDERT
-   ========================================================= */
+/**
+ * Spiegelziel: collection "automaten"
+ * Match-Key: automaten.automatCode
+ * Felder: automatCode, center, stadt, leitung, currentTeamId
+ */
+async function upsertAutomatenMirror({ automatCode, leitung, center, stadt, currentTeamId }) {
+  const snap = await db.collection("automaten").where("automatCode", "==", automatCode).get();
+
+  const payload = {
+    automatCode: automatCode,
+    center: center ?? "",
+    stadt: stadt ?? "",
+    leitung: leitung ?? "",
+    currentTeamId: currentTeamId ?? null,
+  };
+
+  if (snap.empty) {
+    await db.collection("automaten").add(payload);
+    return;
+  }
+
+  const batch = db.batch();
+  snap.docs.forEach((doc) => batch.set(doc.ref, payload, { merge: true }));
+  await batch.commit();
+}
+
+/**
+ * Regel: pro automatCode max. 1 aktive Zuordnung.
+ * Aktiv = validTo == null
+ * Beim Aktivieren eines neuen Eintrags schließen wir alle anderen aktiven.
+ */
+async function closeOtherActives(automatCode, keepId) {
+  const snap = await db
+    .collection("reinigungsdienst_automaten")
+    .where("automatCode", "==", automatCode)
+    .where("validTo", "==", null)
+    .get();
+
+  if (snap.empty) return;
+
+  const now = admin.firestore.Timestamp.now();
+  const batch = db.batch();
+
+  snap.docs.forEach((doc) => {
+    if (doc.id === keepId) return;
+    batch.update(doc.ref, {
+      validTo: now,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  await batch.commit();
+}
+
+/**
+ * Holt die aktuell aktive Zuordnung (validTo == null).
+ */
+async function getActiveAssignment(automatCode) {
+  const snap = await db
+    .collection("reinigungsdienst_automaten")
+    .where("automatCode", "==", automatCode)
+    .where("validTo", "==", null)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  return snap.docs[0].data();
+}
+
+/**
+ * Setzt currentTeamId im Automatenbestand (alle Docs mit diesem automatCode).
+ */
+async function updateAutomatenbestandTeam(automatCode, teamId) {
+  const snap = await db.collection("Automatenbestand").where("automatCode", "==", automatCode).get();
+  if (snap.empty) return;
+
+  const batch = db.batch();
+  snap.docs.forEach((d) => {
+    batch.update(d.ref, {
+      currentTeamId: teamId ?? null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
+/**
+ * Setzt currentTeamId in Standorte anhand des Feldes standortId.
+ */
+async function updateStandorteTeamByStandortId(standortId, teamId) {
+  if (!standortId) return;
+
+  const snap = await db.collection("Standorte").where("standortId", "==", standortId).get();
+  if (snap.empty) return;
+
+  const batch = db.batch();
+  snap.docs.forEach((d) => {
+    batch.set(
+      d.ref,
+      { currentTeamId: teamId ?? null, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  });
+  await batch.commit();
+}
 
 exports.syncAutomatenFromReinigungsdienst = onDocumentWritten(
-  {
-    region: "europe-west3",
-    document: "reinigungsdienst_automaten/{docId}",
-  },
-  async () => {}
+  { region: "europe-west3", document: "reinigungsdienst_automaten/{docId}" },
+  async (event) => {
+    const before = event.data?.before?.data() || null;
+    const after = event.data?.after?.data() || null;
+
+    const automatCode = after?.automatCode || before?.automatCode;
+    if (!automatCode) return;
+
+    if (after && after.validTo === null) {
+      await closeOtherActives(automatCode, event.params.docId);
+    }
+
+    const active = await getActiveAssignment(automatCode);
+
+    const bestand = await getBestand(automatCode);
+    const center = bestand?.centername ?? "";
+    const stadt = bestand?.standort ?? "";
+
+    const teamId = active?.teamId ?? null;
+    const leitung = active?.teamleiter ?? "";
+
+    await upsertAutomatenMirror({ automatCode, leitung, center, stadt, currentTeamId: teamId });
+    await updateAutomatenbestandTeam(automatCode, teamId);
+
+    const standortId = bestand?.standortId ?? null;
+    await updateStandorteTeamByStandortId(standortId, teamId);
+  }
 );
 
 exports.enrichWochenWartungLocation = onDocumentWritten(
-  {
-    region: "europe-west3",
-    document: "wochenWartung/{id}",
-  },
+  { region: "europe-west3", document: "wochenWartung/{id}" },
   async (event) => {
-    const after = event.data?.after?.data();
+    const after = event.data?.after?.data() || null;
     if (!after) return;
 
-    const automatCode = after.automatCode?.toString().trim();
+    const automatCode = after.automatCode ? String(after.automatCode).trim() : "";
     if (!automatCode) return;
 
-    if (after.stadt && after.center) return;
+    const stadtMissing = !after.stadt || String(after.stadt).trim() === "";
+    const centerMissing = !after.center || String(after.center).trim() === "";
+    if (!stadtMissing && !centerMissing) return;
 
     const loc = await deriveLocationFromAutomatCode(automatCode);
-    if (!loc.stadt && !loc.center) return;
+    if ((!loc.stadt || loc.stadt.trim() === "") && (!loc.center || loc.center.trim() === "")) return;
 
     const patch = {};
-    if (!after.stadt && loc.stadt) patch.stadt = loc.stadt;
-    if (!after.center && loc.center) patch.center = loc.center;
+    if (stadtMissing && loc.stadt) patch.stadt = loc.stadt;
+    if (centerMissing && loc.center) patch.center = loc.center;
     if (loc.standortId) patch.standortId = loc.standortId;
-
     patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
     await event.data.after.ref.set(patch, { merge: true });
   }
 );
 
-/* =========================================================
-   ✅ EINFACHE PIN-PRÜFUNG (FINAL)
-   ========================================================= */
+/**
+ * ✅ verifyPin (robust):
+ * - Collection: "pins" (klein)
+ * - Feld: bevorzugt "pin", fallback "PIN"
+ * - vergleicht sowohl String als auch Number
+ * - liefert { ok, user:{name, staedte} }
+ */
+exports.verifyPin = onCall({ region: "europe-west3" }, async (request) => {
+  const pinRaw = request.data && request.data.pin != null ? String(request.data.pin) : "";
+  const pinStr = pinRaw.trim();
 
-exports.verifyPin = onCall(
-  {
-    region: "europe-west3",
-    enforceAppCheck: false,
-  },
-  async (request) => {
-    const pin = String(request.data?.pin || "").trim();
-    if (!pin) {
-      throw new HttpsError("invalid-argument", "PIN fehlt");
+  if (!pinStr) throw new HttpsError("invalid-argument", "PIN fehlt.");
+  if (pinStr.length > 20) throw new HttpsError("invalid-argument", "PIN ungültig.");
+
+  const pinsCol = db.collection("pins");
+
+  // 1) pin als String
+  let doc = null;
+  let snap = await pinsCol.where("pin", "==", pinStr).limit(1).get();
+  if (!snap.empty) doc = snap.docs[0];
+
+  // 2) pin als Number (wenn möglich)
+  if (!doc) {
+    const pinNum = Number(pinStr);
+    if (!Number.isNaN(pinNum)) {
+      const snapNum = await pinsCol.where("pin", "==", pinNum).limit(1).get();
+      if (!snapNum.empty) doc = snapNum.docs[0];
     }
-
-    const snap = await db
-      .collection("pins")
-      .where("pin", "==", pin)
-      .limit(1)
-      .get();
-
-    if (snap.empty) {
-      throw new HttpsError("permission-denied", "PIN ungültig");
-    }
-
-    const pinDoc = snap.docs[0].data();
-
-    return {
-      ok: true,
-      name: pinDoc.name || "",
-      staedte: Array.isArray(pinDoc.staedte)
-        ? pinDoc.staedte
-        : pinDoc.stadt
-        ? [pinDoc.stadt]
-        : [],
-    };
   }
-);
+
+  // 3) fallback: Feldname "PIN"
+  if (!doc) {
+    snap = await pinsCol.where("PIN", "==", pinStr).limit(1).get();
+    if (!snap.empty) doc = snap.docs[0];
+  }
+  if (!doc) {
+    const pinNum = Number(pinStr);
+    if (!Number.isNaN(pinNum)) {
+      const snapNum2 = await pinsCol.where("PIN", "==", pinNum).limit(1).get();
+      if (!snapNum2.empty) doc = snapNum2.docs[0];
+    }
+  }
+
+  if (!doc) {
+    return { ok: false };
+  }
+
+  const pinDoc = doc.data() || {};
+  const name = pinDoc.name != null ? String(pinDoc.name).trim() : "";
+
+  let cities = [];
+  if (Array.isArray(pinDoc.staedte)) {
+    cities = pinDoc.staedte.map((c) => String(c).trim()).filter(Boolean);
+  } else if (pinDoc.stadt != null) {
+    const s = String(pinDoc.stadt).trim();
+    if (s) cities = [s];
+  }
+
+  return {
+    ok: true,
+    user: {
+      name,
+      staedte: cities,
+    },
+  };
+});
