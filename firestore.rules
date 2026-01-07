@@ -2,49 +2,90 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ---------- Helpers ----------
+    /* =========================
+       Basis-Helfer
+    ========================= */
+
     function signedIn() {
       return request.auth != null;
     }
 
-    // Role comes from users/{uid}.role (users is lowercase!)
     function myUserPath() {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
 
-    function myRole() {
+    function myUser() {
       return (signedIn() && exists(myUserPath()))
-        ? get(myUserPath()).data.role
+        ? get(myUserPath()).data
         : null;
+    }
+
+    function myRole() {
+      return myUser() != null ? myUser().role : null;
+    }
+
+    function myCity() {
+      return myUser() != null ? myUser().stadt : null;
     }
 
     function isPrivileged() {
       return signedIn() && (myRole() in ['Admin', 'Supervisor', 'Owner']);
     }
 
-    // ✅ PIN session: anonymous auth + custom token claim
+    function isTeamleiter() {
+      return signedIn() && myRole() == 'Teamleiter';
+    }
+
     function hasPinSession() {
       return signedIn() && request.auth.token.pin_ok == true;
     }
 
-    // ---------- users (klein!) ----------
+    // Teamleiter darf nur Dokumente seiner Stadt lesen (Doc-get)
+    function teamleiterCityRead() {
+      return isTeamleiter()
+        && myCity() != null
+        && resource.data.stadt == myCity();
+    }
+
+    // Teamleiter darf Queries lesen, WENN die Query auf seine Stadt einschränkt
+    function teamleiterQueryRead() {
+      return isTeamleiter()
+        && myCity() != null
+        && request.query != null
+        && request.query.where('stadt', '==', myCity());
+    }
+
+    /* =========================
+       Users
+    ========================= */
+
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow create, update, delete: if isPrivileged();
     }
 
-    // ---------- Reinigungsdienst ----------
-    match /teams/{id} {
+    /* =========================
+       PINs (nur Admin / Server)
+    ========================= */
+
+    match /pins/{id} {
+      allow read, write: if isPrivileged();
+    }
+
+    /* =========================
+       Stammdaten (lesen ok)
+    ========================= */
+
+    match /automaten/{id} {
       allow read: if signedIn();
       allow create, update, delete: if isPrivileged();
     }
 
-    match /team_assignments/{id} {
+    match /Automatenbestand/{id} {
       allow read: if signedIn();
       allow create, update, delete: if isPrivileged();
     }
 
-    // ---------- Stammdaten / operative Daten (case exakt) ----------
     match /Standorte/{id} {
       allow read: if signedIn();
       allow create, update, delete: if isPrivileged();
@@ -61,74 +102,56 @@ service cloud.firestore {
       allow create, update, delete: if isPrivileged();
     }
 
-    match /Automatenbestand/{id} {
+    match /Wartungselemente/{id} {
       allow read: if signedIn();
       allow create, update, delete: if isPrivileged();
     }
 
-    // ==========================================================
-    // PIN-App: öffentliche Webseite, aber Writes nur mit pin_ok
-    // ==========================================================
+    /* =========================
+       Operative Daten
+       (haben jetzt alle `stadt`)
+    ========================= */
 
-    // Pins: NICHT öffentlich, nur serverseitig (Cloud Function) nutzen
-    match /pins/{id} {
-      allow read, write: if isPrivileged();
-    }
-
-    // Orte/Automaten (für Auswahl): darf öffentlich lesbar sein
-    match /automaten/{id} {
-      allow read: if true;
-      allow create, update, delete: if isPrivileged();
-    }
-
-    // Wartungselemente: Checklisten, darf öffentlich lesbar sein
-    match /Wartungselemente/{id} {
-      allow read: if true;
-      allow create, update, delete: if isPrivileged();
-    }
-
-    // ---------- Dashboard / Planung / Logs ----------
     match /wochenWartung/{id} {
-      allow read: if signedIn(); // Dashboard + PIN-App nach Login
+      // ✅ FIX: PIN-Session darf lesen, sonst kann die Reiniger-App die Wochenwartung nicht "öffnen"
+      allow read: if isPrivileged()
+        || teamleiterCityRead()
+        || teamleiterQueryRead()
+        || hasPinSession();
       allow create, update: if hasPinSession() || isPrivileged();
       allow delete: if isPrivileged();
     }
 
     match /Wartungsprotokolle/{id} {
-      allow read: if signedIn(); // Dashboard/Backoffice
-      allow create: if hasPinSession() || isPrivileged();
-      allow update, delete: if isPrivileged();
-    }
-
-    match /bestellungen/{id} {
-      allow read: if hasPinSession() || isPrivileged();
+      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead();
       allow create: if hasPinSession() || isPrivileged();
       allow update, delete: if isPrivileged();
     }
 
     match /reinigungen/{id} {
-      allow read: if signedIn(); // Backoffice
+      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead();
       allow create: if hasPinSession() || isPrivileged();
       allow update, delete: if isPrivileged();
     }
 
-    match /abrechnungFlags/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
+    match /bestellungen/{id} {
+      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead() || hasPinSession();
+      allow create: if hasPinSession() || isPrivileged();
+      allow update, delete: if isPrivileged();
     }
 
-    // Keeping existing behavior (public read) for compatibility, tighten if desired
-    match /reinigungsdienst_automaten/{id} {
-      allow read: if true;
-      allow create, update, delete: if isPrivileged();
-    }
+    /* =========================
+       Rowy (falls vorhanden)
+    ========================= */
 
-    // ---------- Rowy (falls vorhanden) ----------
     match /_rowy_/{document=**} {
       allow read, write: if isPrivileged();
     }
 
-    // ---------- Default deny ----------
+    /* =========================
+       Default: alles andere zu
+    ========================= */
+
     match /{document=**} {
       allow read, write: if false;
     }

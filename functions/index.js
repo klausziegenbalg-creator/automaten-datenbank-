@@ -9,7 +9,7 @@ const db = admin.firestore();
 
 /**
  * Quelle der Wahrheit für Center/Stadt:
- * Automatenbestand.automatCode -> (centername, standort)
+ * Automatenbestand.automatCode -> (centername, standort, standortId)
  */
 async function getBestand(automatCode) {
   const snap = await db
@@ -20,6 +20,47 @@ async function getBestand(automatCode) {
 
   if (snap.empty) return null;
   return snap.docs[0].data();
+}
+
+/**
+ * Fallback: Spiegel "automaten" (wird via syncAutomatenFromReinigungsdienst gepflegt)
+ */
+async function getAutomatMirror(automatCode) {
+  const snap = await db
+    .collection("automaten")
+    .where("automatCode", "==", automatCode)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  return snap.docs[0].data();
+}
+
+/**
+ * Zentrale Ableitung: stadt/center/standortId aus automatCode holen
+ */
+async function deriveLocationFromAutomatCode(automatCode) {
+  if (!automatCode) return { stadt: "", center: "", standortId: null };
+
+  const bestand = await getBestand(automatCode);
+  if (bestand) {
+    return {
+      stadt: bestand.standort ?? "",
+      center: bestand.centername ?? "",
+      standortId: bestand.standortId ?? null,
+    };
+  }
+
+  const mirror = await getAutomatMirror(automatCode);
+  if (mirror) {
+    return {
+      stadt: mirror.stadt ?? "",
+      center: mirror.center ?? "",
+      standortId: mirror.standortId ?? null,
+    };
+  }
+
+  return { stadt: "", center: "", standortId: null };
 }
 
 /**
@@ -38,9 +79,7 @@ async function upsertAutomatenMirror({ automatCode, leitung, center, stadt, curr
     center: center ?? "",
     stadt: stadt ?? "",
     leitung: leitung ?? "",
-    currentTeamId: currentTeamId ?? null, // ✅ NEU
-    // mitarbeiter wird später per zweitem Trigger gespiegelt
-    // mitarbeiter: ...
+    currentTeamId: currentTeamId ?? null,
   };
 
   if (snap.empty) {
@@ -48,8 +87,6 @@ async function upsertAutomatenMirror({ automatCode, leitung, center, stadt, curr
     return;
   }
 
-  // Falls es mehrere Spiegel-Dokumente gibt (sollte nicht, kann aber vorkommen),
-  // updaten wir alle konsistent.
   const batch = db.batch();
   snap.docs.forEach((doc) => batch.set(doc.ref, payload, { merge: true }));
   await batch.commit();
@@ -85,7 +122,6 @@ async function closeOtherActives(automatCode, keepId) {
 
 /**
  * Holt die aktuell aktive Zuordnung (validTo == null).
- * Nach unserer Regel sollte das max. 1 Treffer sein.
  */
 async function getActiveAssignment(automatCode) {
   const snap = await db
@@ -96,12 +132,10 @@ async function getActiveAssignment(automatCode) {
     .get();
 
   if (snap.empty) return null;
-
   return snap.docs[0].data();
 }
 
 /**
- * ✅ NEU:
  * Setzt currentTeamId im Automatenbestand (alle Docs mit diesem automatCode).
  */
 async function updateAutomatenbestandTeam(automatCode, teamId) {
@@ -123,9 +157,7 @@ async function updateAutomatenbestandTeam(automatCode, teamId) {
 }
 
 /**
- * ✅ NEU:
  * Setzt currentTeamId in Standorte anhand des Feldes standortId.
- * (Wichtig: Doc-ID in Standorte ist NICHT zwingend standortId, deshalb where().)
  */
 async function updateStandorteTeamByStandortId(standortId, teamId) {
   if (!standortId) return;
@@ -151,49 +183,31 @@ async function updateStandorteTeamByStandortId(standortId, teamId) {
   await batch.commit();
 }
 
-/**
- * Firestore Trigger:
- * - hält Zuordnungen konsistent (nur 1 aktiv pro automatCode)
- * - spiegelt nach "automaten" die Felder: leitung, center, stadt, currentTeamId
- * - setzt currentTeamId in Automatenbestand + Standorte
- *
- * Region: EU (Frankfurt) -> europe-west3
- */
 exports.syncAutomatenFromReinigungsdienst = onDocumentWritten(
   {
     region: "europe-west3",
     document: "reinigungsdienst_automaten/{docId}",
   },
   async (event) => {
-
     const before = event.data?.before?.data() || null;
     const after = event.data?.after?.data() || null;
 
-    // automatCode aus before/after
     const automatCode = after?.automatCode || before?.automatCode;
     if (!automatCode) return;
 
-    // Wenn nachher aktiv (validTo null) => andere aktive schließen
-    // Hinweis: validTo muss wirklich "null" sein für aktiv.
     if (after && after.validTo === null) {
       await closeOtherActives(automatCode, event.params.docId);
     }
 
-    // Aktive Zuordnung bestimmen (kann null sein)
     const active = await getActiveAssignment(automatCode);
 
-    // Center/Stadt aus Automatenbestand holen (Quelle der Wahrheit)
     const bestand = await getBestand(automatCode);
     const center = bestand?.centername ?? "";
     const stadt = bestand?.standort ?? "";
 
-    // ✅ NEU: teamId aus aktiver Zuordnung (muss in reinigungsdienst_automaten stehen)
     const teamId = active?.teamId ?? null;
-
-    // leitung aus aktiver Zuordnung oder leer (unzugeordnet)
     const leitung = active?.teamleiter ?? "";
 
-    // Spiegeln nach "automaten"
     await upsertAutomatenMirror({
       automatCode,
       leitung,
@@ -202,35 +216,62 @@ exports.syncAutomatenFromReinigungsdienst = onDocumentWritten(
       currentTeamId: teamId,
     });
 
-    // ✅ NEU: Automatenbestand markieren
     await updateAutomatenbestandTeam(automatCode, teamId);
 
-    // ✅ NEU: Standorte markieren (über standortId aus Automatenbestand)
     const standortId = bestand?.standortId ?? null;
     await updateStandorteTeamByStandortId(standortId, teamId);
   }
 );
 
 /**
- * PIN-Login (für öffentliche HTML-Seite):
- * - Client meldet sich zuerst anonym an (Firebase Auth).
- * - Client ruft verifyPin({pin}) als Callable Function auf.
- * - Bei Erfolg geben wir ein Custom Token mit Claim { pin_ok: true } zurück.
- * - Client macht signInWithCustomToken(token) und darf dann schreiben (Rules prüfen pin_ok).
+ * ✅ NEU: wochenWartung automatisch mit stadt/center anreichern.
+ * Hintergrund: Teamleiter dürfen nur ihre Stadt lesen -> Queries brauchen ein stadt-Feld.
+ * Guard: Wir schreiben nur, wenn stadt/center fehlen oder leer sind.
+ */
+exports.enrichWochenWartungLocation = onDocumentWritten(
+  {
+    region: "europe-west3",
+    document: "wochenWartung/{id}",
+  },
+  async (event) => {
+    const after = event.data?.after?.data() || null;
+    if (!after) return; // gelöscht
+
+    const automatCode = after.automatCode ? String(after.automatCode).trim() : "";
+    if (!automatCode) return;
+
+    const stadtMissing = !after.stadt || String(after.stadt).trim() === "";
+    const centerMissing = !after.center || String(after.center).trim() === "";
+
+    if (!stadtMissing && !centerMissing) return; // nichts zu tun
+
+    const loc = await deriveLocationFromAutomatCode(automatCode);
+
+    // Wenn wir nichts ableiten können, nicht schreiben (sonst Endlosschleife ohne Nutzen)
+    if ((!loc.stadt || loc.stadt.trim() === "") && (!loc.center || loc.center.trim() === "")) return;
+
+    const patch = {};
+    if (stadtMissing && loc.stadt) patch.stadt = loc.stadt;
+    if (centerMissing && loc.center) patch.center = loc.center;
+    if (loc.standortId) patch.standortId = loc.standortId;
+
+    patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
+    await event.data.after.ref.set(patch, { merge: true });
+  }
+);
+
+/**
+ * PIN-Login (robust):
+ * - verifyPin funktioniert auch dann, wenn request.auth mal nicht mitkommt.
+ * - Wir erstellen dann selbst eine uid "pin_<PIN>" (deterministisch).
+ * - Token enthält weiterhin Claim { pin_ok: true }.
  */
 exports.verifyPin = onCall({ region: "europe-west3" }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Bitte zuerst (anonym) anmelden.");
-  }
-
   const pinRaw = request.data && request.data.pin != null ? String(request.data.pin) : "";
   const pin = pinRaw.trim();
-  if (!pin) {
-    throw new HttpsError("invalid-argument", "PIN fehlt.");
-  }
-  if (pin.length > 20) {
-    throw new HttpsError("invalid-argument", "PIN ungültig.");
-  }
+  if (!pin) throw new HttpsError("invalid-argument", "PIN fehlt.");
+  if (pin.length > 20) throw new HttpsError("invalid-argument", "PIN ungültig.");
 
   const snap = await db
     .collection("pins")
@@ -239,14 +280,12 @@ exports.verifyPin = onCall({ region: "europe-west3" }, async (request) => {
     .get();
 
   if (snap.empty) {
-    // bewusst generisch
     throw new HttpsError("permission-denied", "PIN falsch.");
   }
 
   const pinDoc = snap.docs[0].data() || {};
   const name = pinDoc.name != null ? String(pinDoc.name).trim() : "";
 
-  // erlaubte Städte: staedte[] oder stadt
   let cities = [];
   if (Array.isArray(pinDoc.staedte)) {
     cities = pinDoc.staedte.map((c) => String(c).trim()).filter(Boolean);
@@ -255,8 +294,9 @@ exports.verifyPin = onCall({ region: "europe-west3" }, async (request) => {
     if (s) cities = [s];
   }
 
-  // Token für die aktuelle uid ausstellen
-  const uid = request.auth.uid;
+  // ✅ UID: wenn Auth vorhanden -> nutze die uid, sonst deterministisch aus PIN
+  const uid = (request.auth && request.auth.uid) ? request.auth.uid : `pin_${pin}`;
+
   const additionalClaims = {
     pin_ok: true,
     pin_name: name,
