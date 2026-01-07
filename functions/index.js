@@ -225,8 +225,6 @@ exports.syncAutomatenFromReinigungsdienst = onDocumentWritten(
 
 /**
  * ✅ NEU: wochenWartung automatisch mit stadt/center anreichern.
- * Hintergrund: Teamleiter dürfen nur ihre Stadt lesen -> Queries brauchen ein stadt-Feld.
- * Guard: Wir schreiben nur, wenn stadt/center fehlen oder leer sind.
  */
 exports.enrichWochenWartungLocation = onDocumentWritten(
   {
@@ -235,7 +233,7 @@ exports.enrichWochenWartungLocation = onDocumentWritten(
   },
   async (event) => {
     const after = event.data?.after?.data() || null;
-    if (!after) return; // gelöscht
+    if (!after) return;
 
     const automatCode = after.automatCode ? String(after.automatCode).trim() : "";
     if (!automatCode) return;
@@ -243,11 +241,9 @@ exports.enrichWochenWartungLocation = onDocumentWritten(
     const stadtMissing = !after.stadt || String(after.stadt).trim() === "";
     const centerMissing = !after.center || String(after.center).trim() === "";
 
-    if (!stadtMissing && !centerMissing) return; // nichts zu tun
+    if (!stadtMissing && !centerMissing) return;
 
     const loc = await deriveLocationFromAutomatCode(automatCode);
-
-    // Wenn wir nichts ableiten können, nicht schreiben (sonst Endlosschleife ohne Nutzen)
     if ((!loc.stadt || loc.stadt.trim() === "") && (!loc.center || loc.center.trim() === "")) return;
 
     const patch = {};
@@ -256,60 +252,61 @@ exports.enrichWochenWartungLocation = onDocumentWritten(
     if (loc.standortId) patch.standortId = loc.standortId;
 
     patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-
     await event.data.after.ref.set(patch, { merge: true });
   }
 );
 
 /**
- * PIN-Login (robust):
- * - verifyPin funktioniert auch dann, wenn request.auth mal nicht mitkommt.
- * - Wir erstellen dann selbst eine uid "pin_<PIN>" (deterministisch).
- * - Token enthält weiterhin Claim { pin_ok: true }.
+ * PIN-Login (robust)
  */
-exports.verifyPin = onCall({ region: "europe-west3" }, async (request) => {
-  const pinRaw = request.data && request.data.pin != null ? String(request.data.pin) : "";
-  const pin = pinRaw.trim();
-  if (!pin) throw new HttpsError("invalid-argument", "PIN fehlt.");
-  if (pin.length > 20) throw new HttpsError("invalid-argument", "PIN ungültig.");
+exports.verifyPin = onCall(
+  {
+    region: "europe-west3",
+    enforceAppCheck: false, // ✅ EINZIGE ÄNDERUNG
+  },
+  async (request) => {
+    const pinRaw = request.data && request.data.pin != null ? String(request.data.pin) : "";
+    const pin = pinRaw.trim();
+    if (!pin) throw new HttpsError("invalid-argument", "PIN fehlt.");
+    if (pin.length > 20) throw new HttpsError("invalid-argument", "PIN ungültig.");
 
-  const snap = await db
-    .collection("pins")
-    .where("pin", "==", pin)
-    .limit(1)
-    .get();
+    const snap = await db
+      .collection("pins")
+      .where("pin", "==", pin)
+      .limit(1)
+      .get();
 
-  if (snap.empty) {
-    throw new HttpsError("permission-denied", "PIN falsch.");
+    if (snap.empty) {
+      throw new HttpsError("permission-denied", "PIN falsch.");
+    }
+
+    const pinDoc = snap.docs[0].data() || {};
+    const name = pinDoc.name != null ? String(pinDoc.name).trim() : "";
+
+    let cities = [];
+    if (Array.isArray(pinDoc.staedte)) {
+      cities = pinDoc.staedte.map((c) => String(c).trim()).filter(Boolean);
+    } else if (pinDoc.stadt != null) {
+      const s = String(pinDoc.stadt).trim();
+      if (s) cities = [s];
+    }
+
+    const uid = (request.auth && request.auth.uid) ? request.auth.uid : `pin_${pin}`;
+
+    const additionalClaims = {
+      pin_ok: true,
+      pin_name: name,
+      pin_cities: cities,
+    };
+
+    const token = await admin.auth().createCustomToken(uid, additionalClaims);
+
+    return {
+      token,
+      user: {
+        name,
+        staedte: cities,
+      },
+    };
   }
-
-  const pinDoc = snap.docs[0].data() || {};
-  const name = pinDoc.name != null ? String(pinDoc.name).trim() : "";
-
-  let cities = [];
-  if (Array.isArray(pinDoc.staedte)) {
-    cities = pinDoc.staedte.map((c) => String(c).trim()).filter(Boolean);
-  } else if (pinDoc.stadt != null) {
-    const s = String(pinDoc.stadt).trim();
-    if (s) cities = [s];
-  }
-
-  // ✅ UID: wenn Auth vorhanden -> nutze die uid, sonst deterministisch aus PIN
-  const uid = (request.auth && request.auth.uid) ? request.auth.uid : `pin_${pin}`;
-
-  const additionalClaims = {
-    pin_ok: true,
-    pin_name: name,
-    pin_cities: cities,
-  };
-
-  const token = await admin.auth().createCustomToken(uid, additionalClaims);
-
-  return {
-    token,
-    user: {
-      name,
-      staedte: cities,
-    },
-  };
-});
+);
