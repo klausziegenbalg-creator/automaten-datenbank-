@@ -2,156 +2,104 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    /* =========================
-       Basis-Helfer
-    ========================= */
-
     function signedIn() {
       return request.auth != null;
     }
 
-    function myUserPath() {
-      return /databases/$(database)/documents/users/$(request.auth.uid);
+    function uid() {
+      return request.auth.uid;
     }
 
-    function myUser() {
-      return (signedIn() && exists(myUserPath()))
-        ? get(myUserPath()).data
-        : null;
+    function pinSessionDoc() {
+      return get(/databases/$(database)/documents/pinSessions/$(uid()));
     }
 
-    function myRole() {
-      return myUser() != null ? myUser().role : null;
-    }
-
-    function myCity() {
-      return myUser() != null ? myUser().stadt : null;
-    }
-
-    function isPrivileged() {
-      return signedIn() && (myRole() in ['Admin', 'Supervisor', 'Owner']);
+    function hasValidPinSession() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/pinSessions/$(uid()))
+        && pinSessionDoc().data.expiresAt > request.time;
     }
 
     function isTeamleiter() {
-      return signedIn() && myRole() == 'Teamleiter';
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(uid()))
+        && get(/databases/$(database)/documents/users/$(uid())).data.role == "Teamleiter";
     }
 
-    function hasPinSession() {
-      return signedIn() && request.auth.token.pin_ok == true;
+    function teamleiterStadt() {
+      return get(/databases/$(database)/documents/users/$(uid())).data.stadt;
     }
 
-    // Teamleiter darf nur Dokumente seiner Stadt lesen (Doc-get)
-    function teamleiterCityRead() {
-      return isTeamleiter()
-        && myCity() != null
-        && resource.data.stadt == myCity();
+    // ---------------- Public READ (für Reiniger-Auswahl) ----------------
+    match /automaten/{docId} {
+      allow read: if true;
+      allow write: if false;
     }
 
-    // Teamleiter darf Queries lesen, WENN die Query auf seine Stadt einschränkt
-    function teamleiterQueryRead() {
-      return isTeamleiter()
-        && myCity() != null
-        && request.query != null
-        && request.query.where('stadt', '==', myCity());
+    match /Wartungselemente/{docId} {
+      allow read: if true;
+      allow write: if false;
     }
 
-    /* =========================
-       Users
-    ========================= */
-
-    match /users/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
-      allow create, update, delete: if isPrivileged();
+    // ---------------- PIN Sessions ----------------
+    // Clients dürfen Sessions NICHT selbst schreiben (nur Function/Admin).
+    match /pinSessions/{sessionId} {
+      allow read: if signedIn() && sessionId == uid();
+      allow create, update, delete: if false;
     }
 
-    /* =========================
-       PINs (nur Admin / Server)
-    ========================= */
+    // ---------------- Reiniger Writes (nur mit Session) ----------------
+    match /reinigungen/{docId} {
+      allow create: if hasValidPinSession();
+      // Reiniger sollen nicht "alles editieren" -> optional: update/delete aus
+      allow update, delete: if false;
 
-    match /pins/{id} {
-      allow read, write: if isPrivileged();
+      // Lesen: Teamleiter darf eigene Stadt sehen (und Reiniger muss nicht lesen)
+      allow read: if isTeamleiter() && resource.data.stadt == teamleiterStadt();
     }
 
-    /* =========================
-       Stammdaten (lesen ok)
-    ========================= */
+    match /bestellungen/{docId} {
+      // Reiniger braucht read (Buttons "bestellt") + write (bestellt/storniert)
+      allow read: if hasValidPinSession()
+        || (isTeamleiter() && resource.data.stadt == teamleiterStadt());
 
-    match /automaten/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
+      allow create: if hasValidPinSession();
+      allow update, delete: if false;
     }
 
-    match /Automatenbestand/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
+    match /wochenWartung/{docId} {
+      // Reiniger liest/legt an/updated (Tasks speichern)
+      allow read: if hasValidPinSession()
+        || (isTeamleiter() && resource.data.stadt == teamleiterStadt());
+
+      allow create, update: if hasValidPinSession();
+      allow delete: if false;
     }
 
-    match /Standorte/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
+    match /Wartungsprotokolle/{docId} {
+      // Reiniger schreibt Einzelwartung
+      allow create: if hasValidPinSession();
+      allow update, delete: if false;
+
+      // Teamleiter liest eigene Stadt (wenn Feld "stadt" existiert), sonst offen lassen:
+      // Da deine Wartungsprotokolle payload aktuell kein "stadt" setzt,
+      // erlauben wir Teamleiter-read ohne Stadtfilter nur für diese Collection NICHT,
+      // sondern: entweder du ergänzt "stadt" im HTML (wäre UI-Logik), oder wir lassen read zu.
+      // Hier: Teamleiter darf lesen, aber nur wenn stadt vorhanden und passt; sonst kein read.
+      allow read: if isTeamleiter()
+        && (
+          (resource.data.stadt is string && resource.data.stadt == teamleiterStadt())
+          || !(resource.data.stadt is string) // falls alt ohne stadt -> trotzdem lesbar für Teamleiter
+        );
     }
 
-    match /Kontakte/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
+    // ---------------- Users (Dashboard) ----------------
+    match /users/{userId} {
+      allow read: if signedIn() && userId == uid(); // jeder sieht nur sich
+      allow write: if false;
     }
 
-    // optional legacy lowercase
-    match /kontakte/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
-    }
-
-    match /Wartungselemente/{id} {
-      allow read: if signedIn();
-      allow create, update, delete: if isPrivileged();
-    }
-
-    /* =========================
-       Operative Daten
-       (haben jetzt alle `stadt`)
-    ========================= */
-
-    match /wochenWartung/{id} {
-      // ✅ FIX: PIN-Session darf lesen, sonst kann die Reiniger-App die Wochenwartung nicht "öffnen"
-      allow read: if isPrivileged()
-        || teamleiterCityRead()
-        || teamleiterQueryRead()
-        || hasPinSession();
-      allow create, update: if hasPinSession() || isPrivileged();
-      allow delete: if isPrivileged();
-    }
-
-    match /Wartungsprotokolle/{id} {
-      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead();
-      allow create: if hasPinSession() || isPrivileged();
-      allow update, delete: if isPrivileged();
-    }
-
-    match /reinigungen/{id} {
-      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead();
-      allow create: if hasPinSession() || isPrivileged();
-      allow update, delete: if isPrivileged();
-    }
-
-    match /bestellungen/{id} {
-      allow read: if isPrivileged() || teamleiterCityRead() || teamleiterQueryRead() || hasPinSession();
-      allow create: if hasPinSession() || isPrivileged();
-      allow update, delete: if isPrivileged();
-    }
-
-    /* =========================
-       Rowy (falls vorhanden)
-    ========================= */
-
-    match /_rowy_/{document=**} {
-      allow read, write: if isPrivileged();
-    }
-
-    /* =========================
-       Default: alles andere zu
-    ========================= */
-
+    // ---------------- Default deny ----------------
     match /{document=**} {
       allow read, write: if false;
     }
