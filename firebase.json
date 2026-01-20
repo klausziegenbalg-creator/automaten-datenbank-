@@ -17,7 +17,7 @@
     },
     {
       "site": "digitales-bordbuch",
-      "public": "pin-public",
+      "public": "public",
       "ignore": [
         "firebase.json",
         "**/.*",
